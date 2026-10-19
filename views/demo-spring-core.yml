@@ -1,0 +1,45 @@
+# DEMO ONLY. Questions about the jar this realm ships as its example, spring-core 6.2.18 in
+# data/jars/. Nothing else in the realm reads these or knows they exist; each pins the demo jar
+# and asks a Spring-flavoured instance of a general view.
+
+- name: SpringCoreRepackagedLibraries
+  description: >-
+    Demo, spring-core: the third-party libraries Spring repackages inside spring-core under its own
+    namespace (cglib, ASM, Objenesis, JavaPoet), with type counts - code you ship without a
+    dependency that says so.
+  cypher: |
+    MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_PACKAGE]->(p:JavaPackage)
+    WHERE p.name STARTS WITH 'org.springframework.cglib' OR p.name STARTS WITH 'org.springframework.asm'
+       OR p.name STARTS WITH 'org.springframework.objenesis' OR p.name STARTS WITH 'org.springframework.javapoet'
+    WITH split(p.name, '.')[2] AS library, sum(p.types) AS types, count(p) AS packages
+    RETURN library, packages, types
+    ORDER BY types DESC
+
+- name: SpringCoreReferenceCaches
+  description: >-
+    Demo, spring-core: fields declared as Spring's ConcurrentReferenceHashMap (its soft/weak
+    reference cache, which a heap dump shows as Segment and Reference arrays), whether static, and
+    who declares them.
+  cypher: |
+    MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_FIELD]->(f:JavaField {type: 'org.springframework.util.ConcurrentReferenceHashMap'})
+    RETURN f.key AS field, f.owner AS declaredBy, f.isStatic AS isStatic, f.isFinal AS isFinal
+    ORDER BY isStatic DESC, field
+    LIMIT 200
+
+- name: SpringCoreStaticMaps
+  description: >-
+    Demo, spring-core: static map fields in Spring's own packages (not the repackaged libraries),
+    with how many methods add to a JDK map and how many remove - JavaStaticContainers narrowed to
+    Spring's code.
+  cypher: |
+    MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_FIELD]->(f:JavaField {isStatic: true, container: 'map'})
+    WHERE NOT f.owner STARTS WITH 'org.springframework.cglib' AND NOT f.owner STARTS WITH 'org.springframework.asm'
+      AND NOT f.owner STARTS WITH 'org.springframework.objenesis' AND NOT f.owner STARTS WITH 'org.springframework.javapoet'
+    OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:FieldAccess)-[:SAME_METHOD_CALL]->(c:MethodCall)
+    WHERE c.calleeOwner STARTS WITH 'java.'
+      AND c.calleeName IN ['put', 'putAll', 'putIfAbsent', 'computeIfAbsent', 'compute', 'merge', 'remove', 'clear']
+    WITH f, collect(DISTINCT CASE WHEN c.calleeName IN ['remove', 'clear'] THEN NULL ELSE a.method END) AS adding,
+            collect(DISTINCT CASE WHEN c.calleeName IN ['remove', 'clear'] THEN a.method END) AS removing
+    RETURN f.key AS field, f.type AS declaredType, size(adding) AS addingMethods, size(removing) AS removingMethods
+    ORDER BY addingMethods DESC, field
+    LIMIT 50

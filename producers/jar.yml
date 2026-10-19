@@ -1,0 +1,26 @@
+# Every producer reads the jar itself, when a query reaches it, through the appliance's `jar`
+# producer kind (ArchUnit over the class files). Nothing is stored: the rows are transient for
+# the query that asked. `emit` names the collection, `by` the row property the anchor key selects
+# on — `jarPath` for a whole jar, otherwise the key is `<jar path>!<value>`, which is exactly the
+# `id` / `…Id` a row from the previous hop already carries.
+
+# Whole-jar collections, anchored on a pinned path: (j:Jar {path: '…'}).
+- { name: javaJarArtifact, kind: jar, emit: artifact }
+- { name: javaJarPackages, kind: jar, emit: packages }
+- { name: javaJarTypes,    kind: jar, emit: types }
+- { name: javaJarFields,   kind: jar, emit: fields }
+- { name: javaJarMethods,  kind: jar, emit: methods }
+- { name: javaJarAccesses, kind: jar, emit: accesses }
+- { name: javaJarCalls,    kind: jar, emit: calls }
+
+# Hops from a member already in hand.
+- { name: javaTypesInPackage,    kind: jar, emit: types,    by: packageName }
+- { name: javaFieldsOfType,      kind: jar, emit: fields,   by: owner }
+- { name: javaMethodsOfType,     kind: jar, emit: methods,  by: owner }
+- { name: javaSubclassesOf,      kind: jar, emit: types,    by: superclass }
+- { name: javaImplementorsOf,    kind: jar, emit: types,    by: interfaces }
+- { name: javaAccessesOfField,   kind: jar, emit: accesses, by: field }
+- { name: javaAccessesInMethod,  kind: jar, emit: accesses, by: method }
+- { name: javaCallsFromMethod,   kind: jar, emit: calls,    by: caller }
+- { name: javaCallsToMethod,     kind: jar, emit: calls,    by: callee }
+- { name: javaMethodByKey,       kind: jar, emit: methods,  by: key }

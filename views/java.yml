@@ -1,0 +1,198 @@
+# The realm's answer surface over ANY jar. Every view takes `jar`, the path of the jar to read
+# (relative to the world's data/ tree, absolute under a trusted root, or relative to this realm's
+# directory); the jar is read when the view runs and nothing is stored. No view names a library.
+# Drill-downs return nothing until you name the type, field or method; listing views return the
+# exact names their drill-downs take.
+#
+# "Adds" and "removes" mean calls to the JDK's own container APIs (java.util collections and
+# maps, ThreadLocal) made in the same method that touches the field. That is the approximation
+# bytecode supports cheaply: it shows the method both touches the field and grows or shrinks a
+# JDK container, not that the receiver is that field.
+
+- name: JarSummary
+  description: >-
+    What a jar is: coordinate, file, SHA-256 and how many types and packages it holds. The first
+    call for any jar, and proof the path resolves.
+  params:
+    jar: { type: string, default: "", description: "Path of the jar to read." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:IS_ARTIFACT]->(a:JavaArtifact)
+    OPTIONAL MATCH (j)-[:HAS_PACKAGE]->(p:JavaPackage)
+    RETURN a.coordinate AS coordinate, a.fileName AS fileName, a.version AS version,
+           a.sha256 AS sha256, a.types AS types, count(p) AS packages
+
+- name: JarPackages
+  description: >-
+    The packages of a jar with how many types each holds, largest first.
+  params:
+    jar: { type: string, default: "", description: "Path of the jar to read." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_PACKAGE]->(p:JavaPackage)
+    RETURN p.name AS package, p.types AS types
+    ORDER BY types DESC, package
+    LIMIT 500
+
+- name: JavaTypeProfile
+  description: >-
+    One type by binary name (`pkg.Outer$Inner`, as a heap dump or stack trace prints it): kind,
+    visibility, source file, superclass and interfaces (inside or outside the jar), enclosing type,
+    how many fields, static fields and methods it declares, and how many types in the jar directly
+    extend or implement it.
+  params:
+    jar: { type: string, default: "", description: "Path of the jar to read." }
+    type: { type: string, default: "", description: "Binary class name, e.g. com.example.Cache$Entry." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_TYPE]->(t:JavaType {name: $type})
+    OPTIONAL MATCH (t)-[:HAS_SUBCLASS]->(s:JavaType)
+    OPTIONAL MATCH (t)-[:HAS_IMPLEMENTOR]->(i:JavaType)
+    RETURN t.name AS type, t.kind AS kind, t.nesting AS nesting, t.visibility AS visibility,
+           t.isAbstract AS isAbstract, t.isFinal AS isFinal, t.sourceFile AS sourceFile,
+           t.superclass AS superclass, t.interfaces AS interfaces, t.enclosingType AS enclosingType,
+           t.fields AS fields, t.staticFields AS staticFields, t.methods AS methods,
+           count(DISTINCT s) + count(DISTINCT i) AS directSubtypes
+
+- name: JavaSubtypes
+  description: >-
+    Types in a jar that directly extend or implement a type, by binary name. The supertype may be
+    outside the jar (`java.lang.Runnable`, `java.util.AbstractMap`): it is matched by name, so this
+    answers "what in this jar implements X" for any X.
+  params:
+    jar: { type: string, default: "", description: "Path of the jar to read." }
+    type: { type: string, default: "", description: "Binary name of the supertype or interface." }
+    limit: { type: int, default: 200, description: "Maximum rows." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_TYPE]->(t:JavaType)
+    WHERE $type <> '' AND (t.superclass = $type OR $type IN t.interfaces)
+    RETURN t.name AS type, t.kind AS kind, t.nesting AS nesting, t.visibility AS visibility,
+           CASE WHEN t.superclass = $type THEN 'extends' ELSE 'implements' END AS relation
+    ORDER BY type
+    LIMIT $limit
+
+- name: JavaTypeFields
+  description: >-
+    The fields one type declares: declared type, container kind, static, final, and how many
+    methods read and write each. The step from a type to the field that holds memory.
+  params:
+    jar: { type: string, default: "", description: "Path of the jar to read." }
+    type: { type: string, default: "", description: "Binary class name of the declaring type." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_TYPE]->(t:JavaType {name: $type})-[:DECLARES_FIELD]->(f:JavaField)
+    OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:FieldAccess)
+    WITH f, sum(CASE WHEN a.access = 'READ' THEN 1 ELSE 0 END) AS readers,
+            sum(CASE WHEN a.access = 'WRITE' THEN 1 ELSE 0 END) AS writers
+    RETURN f.key AS field, f.name AS name, f.type AS declaredType, f.container AS container,
+           f.isStatic AS isStatic, f.isFinal AS isFinal, f.visibility AS visibility, readers, writers
+    ORDER BY isStatic DESC, name
+
+- name: JavaStaticContainers
+  description: >-
+    Static fields of a jar whose declared type is a map, collection, array, ThreadLocal or
+    Reference - memory that lives as long as its class loader - ranked by how many methods that
+    touch the field also add to a JDK container, against how many also remove. A static map with
+    adders and no removers is the classic unbounded cache. Approximate: see the note at the top.
+  params:
+    jar: { type: string, default: "", description: "Path of the jar to read." }
+    container: { type: string, default: "", description: "map, collection, array, threadlocal or reference; empty = all." }
+    limit: { type: int, default: 50, description: "Maximum rows." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_FIELD]->(f:JavaField {isStatic: true})
+    WHERE f.container <> 'none' AND ($container = '' OR f.container = $container)
+    OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:FieldAccess)-[:SAME_METHOD_CALL]->(c:MethodCall)
+    WHERE c.calleeOwner STARTS WITH 'java.'
+      AND c.calleeName IN ['put', 'putAll', 'putIfAbsent', 'computeIfAbsent', 'compute', 'merge',
+                           'add', 'addAll', 'addFirst', 'addLast', 'offer', 'push', 'set',
+                           'remove', 'removeAll', 'removeIf', 'retainAll', 'clear', 'poll', 'pop',
+                           'removeFirst', 'removeLast']
+    WITH f,
+         collect(DISTINCT CASE WHEN c.calleeName IN ['remove', 'removeAll', 'removeIf', 'retainAll', 'clear',
+             'poll', 'pop', 'removeFirst', 'removeLast'] THEN NULL ELSE a.method END) AS adding,
+         collect(DISTINCT CASE WHEN c.calleeName IN ['remove', 'removeAll', 'removeIf', 'retainAll', 'clear',
+             'poll', 'pop', 'removeFirst', 'removeLast'] THEN a.method END) AS removing
+    RETURN f.key AS field, f.type AS declaredType, f.container AS container, f.isFinal AS isFinal,
+           f.visibility AS visibility, size(adding) AS addingMethods, size(removing) AS removingMethods
+    ORDER BY addingMethods DESC, removingMethods ASC, field
+    LIMIT $limit
+
+- name: JavaFieldAccesses
+  description: >-
+    Every method that reads or writes one field, with source lines - "who assigns this field, and
+    where". A field outside the jar (e.g. `java.lang.System.out`) works too: it is matched by name.
+  params:
+    jar: { type: string, default: "", description: "Path of the jar to read." }
+    field: { type: string, default: "", description: "Field key `<binary owner>.<name>`, from JavaTypeFields or JavaStaticContainers." }
+    access: { type: string, default: "", description: "READ or WRITE; empty = both." }
+    limit: { type: int, default: 200, description: "Maximum rows." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_ACCESS]->(a:FieldAccess {field: $field})
+    WHERE $access = '' OR a.access = $access
+    RETURN a.method AS method, a.methodOwner AS type, a.access AS access, a.lines AS lines, a.count AS sites
+    ORDER BY access DESC, method
+    LIMIT $limit
+
+- name: JavaFieldMutationSites
+  description: >-
+    For one field: each method that touches it, and the JDK container adds and removes that method
+    makes, with their lines - the evidence behind JavaStaticContainers, method by method. Shows
+    WHERE a cache grows and whether anything ever shrinks it.
+  params:
+    jar: { type: string, default: "", description: "Path of the jar to read." }
+    field: { type: string, default: "", description: "Field key `<binary owner>.<name>`." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_ACCESS]->(a:FieldAccess {field: $field})
+    OPTIONAL MATCH (a)-[:SAME_METHOD_CALL]->(c:MethodCall)
+    WHERE c.calleeOwner STARTS WITH 'java.'
+      AND c.calleeName IN ['put', 'putAll', 'putIfAbsent', 'computeIfAbsent', 'compute', 'merge',
+                           'add', 'addAll', 'addFirst', 'addLast', 'offer', 'push', 'set',
+                           'remove', 'removeAll', 'removeIf', 'retainAll', 'clear', 'poll', 'pop',
+                           'removeFirst', 'removeLast']
+    RETURN a.method AS method, a.access AS fieldAccess, a.lines AS fieldLines,
+           collect(c.calleeOwner + '.' + c.calleeName + ' @' + toString(c.firstLine)) AS containerCalls
+    ORDER BY method
+    LIMIT 200
+
+- name: JavaCallers
+  description: >-
+    Who in a jar calls a type's methods, by the target's binary owner name and optionally the method
+    name, with lines. The target may be anywhere: `java.lang.System` + `exit`, `java.lang.Thread` +
+    `<init>`, or a type in the jar. Constructors are `<init>`.
+  params:
+    jar: { type: string, default: "", description: "Path of the jar to read." }
+    type: { type: string, default: "", description: "Binary name of the called type." }
+    method: { type: string, default: "", description: "Method name; empty = any method of the type." }
+    limit: { type: int, default: 200, description: "Maximum rows." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_CALL]->(c:MethodCall {calleeOwner: $type})
+    WHERE $method = '' OR c.calleeName = $method
+    RETURN c.callee AS callee, c.caller AS caller, c.callerOwner AS callerType, c.lines AS lines, c.count AS sites
+    ORDER BY callee, caller
+    LIMIT $limit
+
+- name: JavaMethodsNamed
+  description: >-
+    Methods of a type with a given name and their first source line - resolves a stack-trace frame
+    (`Type.method(File.java:123)`) to method keys. Overloads are all returned; the one whose first
+    line is the highest not above the frame's line holds it.
+  params:
+    jar: { type: string, default: "", description: "Path of the jar to read." }
+    type: { type: string, default: "", description: "Binary class name from the frame." }
+    method: { type: string, default: "", description: "Method name from the frame; empty = every method." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_METHOD]->(m:JavaMethod {owner: $type})
+    WHERE $method = '' OR m.name = $method
+    RETURN m.key AS method, m.kind AS kind, m.line AS firstLine, m.returnType AS returnType,
+           m.isStatic AS isStatic, m.isSynthetic AS isSynthetic
+    ORDER BY firstLine
+    LIMIT 500
+
+- name: JavaOutsideDependencies
+  description: >-
+    The code outside a jar that it calls most - JDK and third-party types - by call sites and
+    calling methods. What a jar leans on, and what upgrading a dependency touches.
+  params:
+    jar: { type: string, default: "", description: "Path of the jar to read." }
+    limit: { type: int, default: 50, description: "Maximum rows." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_CALL]->(c:MethodCall {internal: false})
+    RETURN c.calleeOwner AS type, sum(c.count) AS callSites, count(DISTINCT c.caller) AS callingMethods
+    ORDER BY callSites DESC
+    LIMIT $limit
