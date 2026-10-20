@@ -1,7 +1,8 @@
 # The realm's answer surface over ANY jar. Every view takes `jar`, the path of the jar to read
 # (relative to the world's data/ tree, absolute under a trusted root, or relative to this realm's
 # directory); the jar is read when the view runs and nothing is stored. No view names a library.
-# Drill-downs return nothing until you name the type, field or method; listing views return the
+# `jar`, and the type or field a drill-down is about, are required: a run without them is refused,
+# naming the missing argument, rather than answered with nothing. Listing views return the
 # exact names their drill-downs take.
 #
 # "Adds" and "removes" mean calls to the JDK's own container APIs (java.util collections and
@@ -14,7 +15,7 @@
     What a jar is: coordinate, file, SHA-256 and how many types and packages it holds. The first
     call for any jar, and proof the path resolves.
   params:
-    jar: { type: string, default: "", description: "Path of the jar to read." }
+    jar: { type: string, description: "Path of the jar to read." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:IS_ARTIFACT]->(a:JavaArtifact)
     OPTIONAL MATCH (j)-[:HAS_PACKAGE]->(p:JavaPackage)
@@ -25,7 +26,7 @@
   description: >-
     The packages of a jar with how many types each holds, largest first.
   params:
-    jar: { type: string, default: "", description: "Path of the jar to read." }
+    jar: { type: string, description: "Path of the jar to read." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_PACKAGE]->(p:JavaPackage)
     RETURN p.name AS package, p.types AS types
@@ -39,8 +40,8 @@
     how many fields, static fields and methods it declares, and how many types in the jar directly
     extend or implement it.
   params:
-    jar: { type: string, default: "", description: "Path of the jar to read." }
-    type: { type: string, default: "", description: "Binary class name, e.g. com.example.Cache$Entry." }
+    jar: { type: string, description: "Path of the jar to read." }
+    type: { type: string, description: "Binary class name, e.g. com.example.Cache$Entry." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_TYPE]->(t:JavaType {name: $type})
     OPTIONAL MATCH (t)-[:HAS_SUBCLASS]->(s:JavaType)
@@ -57,12 +58,12 @@
     outside the jar (`java.lang.Runnable`, `java.util.AbstractMap`): it is matched by name, so this
     answers "what in this jar implements X" for any X.
   params:
-    jar: { type: string, default: "", description: "Path of the jar to read." }
-    type: { type: string, default: "", description: "Binary name of the supertype or interface." }
+    jar: { type: string, description: "Path of the jar to read." }
+    type: { type: string, description: "Binary name of the supertype or interface." }
     limit: { type: int, default: 200, description: "Maximum rows." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_TYPE]->(t:JavaType)
-    WHERE $type <> '' AND (t.superclass = $type OR $type IN t.interfaces)
+    WHERE t.superclass = $type OR $type IN t.interfaces
     RETURN t.name AS type, t.kind AS kind, t.nesting AS nesting, t.visibility AS visibility,
            CASE WHEN t.superclass = $type THEN 'extends' ELSE 'implements' END AS relation
     ORDER BY type
@@ -73,8 +74,8 @@
     The fields one type declares: declared type, container kind, static, final, and how many
     methods read and write each. The step from a type to the field that holds memory.
   params:
-    jar: { type: string, default: "", description: "Path of the jar to read." }
-    type: { type: string, default: "", description: "Binary class name of the declaring type." }
+    jar: { type: string, description: "Path of the jar to read." }
+    type: { type: string, description: "Binary class name of the declaring type." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_TYPE]->(t:JavaType {name: $type})-[:DECLARES_FIELD]->(f:JavaField)
     OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:FieldAccess)
@@ -91,7 +92,7 @@
     touch the field also add to a JDK container, against how many also remove. A static map with
     adders and no removers is the classic unbounded cache. Approximate: see the note at the top.
   params:
-    jar: { type: string, default: "", description: "Path of the jar to read." }
+    jar: { type: string, description: "Path of the jar to read." }
     container: { type: string, default: "", description: "map, collection, array, threadlocal or reference; empty = all." }
     limit: { type: int, default: 50, description: "Maximum rows." }
   cypher: |
@@ -118,8 +119,8 @@
     Every method that reads or writes one field, with source lines - "who assigns this field, and
     where". A field outside the jar (e.g. `java.lang.System.out`) works too: it is matched by name.
   params:
-    jar: { type: string, default: "", description: "Path of the jar to read." }
-    field: { type: string, default: "", description: "Field key `<binary owner>.<name>`, from JavaTypeFields or JavaStaticContainers." }
+    jar: { type: string, description: "Path of the jar to read." }
+    field: { type: string, description: "Field key `<binary owner>.<name>`, e.g. org.example.Util.CACHE (not the bare name), from JavaTypeFields or JavaStaticContainers." }
     access: { type: string, default: "", description: "READ or WRITE; empty = both." }
     limit: { type: int, default: 200, description: "Maximum rows." }
   cypher: |
@@ -135,8 +136,8 @@
     makes, with their lines - the evidence behind JavaStaticContainers, method by method. Shows
     WHERE a cache grows and whether anything ever shrinks it.
   params:
-    jar: { type: string, default: "", description: "Path of the jar to read." }
-    field: { type: string, default: "", description: "Field key `<binary owner>.<name>`." }
+    jar: { type: string, description: "Path of the jar to read." }
+    field: { type: string, description: "Field key `<binary owner>.<name>`, e.g. org.example.Util.CACHE (not the bare name)." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_ACCESS]->(a:FieldAccess {field: $field})
     OPTIONAL MATCH (a)-[:SAME_METHOD_CALL]->(c:MethodCall)
@@ -156,8 +157,8 @@
     name, with lines. The target may be anywhere: `java.lang.System` + `exit`, `java.lang.Thread` +
     `<init>`, or a type in the jar. Constructors are `<init>`.
   params:
-    jar: { type: string, default: "", description: "Path of the jar to read." }
-    type: { type: string, default: "", description: "Binary name of the called type." }
+    jar: { type: string, description: "Path of the jar to read." }
+    type: { type: string, description: "Binary name of the called type." }
     method: { type: string, default: "", description: "Method name; empty = any method of the type." }
     limit: { type: int, default: 200, description: "Maximum rows." }
   cypher: |
@@ -173,8 +174,8 @@
     (`Type.method(File.java:123)`) to method keys. Overloads are all returned; the one whose first
     line is the highest not above the frame's line holds it.
   params:
-    jar: { type: string, default: "", description: "Path of the jar to read." }
-    type: { type: string, default: "", description: "Binary class name from the frame." }
+    jar: { type: string, description: "Path of the jar to read." }
+    type: { type: string, description: "Binary class name from the frame." }
     method: { type: string, default: "", description: "Method name from the frame; empty = every method." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_METHOD]->(m:JavaMethod {owner: $type})
@@ -189,7 +190,7 @@
     The code outside a jar that it calls most - JDK and third-party types - by call sites and
     calling methods. What a jar leans on, and what upgrading a dependency touches.
   params:
-    jar: { type: string, default: "", description: "Path of the jar to read." }
+    jar: { type: string, description: "Path of the jar to read." }
     limit: { type: int, default: 50, description: "Maximum rows." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_CALL]->(c:MethodCall {internal: false})
