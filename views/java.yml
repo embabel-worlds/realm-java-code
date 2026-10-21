@@ -50,6 +50,7 @@
            t.isAbstract AS isAbstract, t.isFinal AS isFinal, t.sourceFile AS sourceFile,
            t.superclass AS superclass, t.interfaces AS interfaces, t.enclosingType AS enclosingType,
            t.fields AS fields, t.staticFields AS staticFields, t.methods AS methods,
+           t.typeParameters AS typeParameters, t.hashCodeFrom AS hashCodeFrom, t.equalsFrom AS equalsFrom,
            count(DISTINCT s) + count(DISTINCT i) AS directSubtypes
 
 - name: JavaSubtypes
@@ -78,10 +79,10 @@
     type: { type: string, description: "Binary class name of the declaring type." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_TYPE]->(t:JavaType {name: $type})-[:DECLARES_FIELD]->(f:JavaField)
-    OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:FieldAccess)
+    OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:JavaFieldAccess)
     WITH f, sum(CASE WHEN a.access = 'READ' THEN 1 ELSE 0 END) AS readers,
             sum(CASE WHEN a.access = 'WRITE' THEN 1 ELSE 0 END) AS writers
-    RETURN f.key AS field, f.name AS name, f.type AS declaredType, f.container AS container,
+    RETURN f.key AS field, f.name AS name, f.genericType AS declaredType, f.container AS container,
            f.isStatic AS isStatic, f.isFinal AS isFinal, f.visibility AS visibility, readers, writers
     ORDER BY isStatic DESC, name
 
@@ -98,7 +99,7 @@
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_FIELD]->(f:JavaField {isStatic: true})
     WHERE f.container <> 'none' AND ($container = '' OR f.container = $container)
-    OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:FieldAccess)-[:SAME_METHOD_CALL]->(c:MethodCall)
+    OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:JavaFieldAccess)-[:SAME_METHOD_CALL]->(c:JavaMethodCall)
     WHERE c.calleeOwner STARTS WITH 'java.'
       AND c.calleeName IN ['put', 'putAll', 'putIfAbsent', 'computeIfAbsent', 'compute', 'merge',
                            'add', 'addAll', 'addFirst', 'addLast', 'offer', 'push', 'set',
@@ -124,7 +125,7 @@
     access: { type: string, default: "", description: "READ or WRITE; empty = both." }
     limit: { type: int, default: 200, description: "Maximum rows." }
   cypher: |
-    MATCH (j:Jar {path: $jar})-[:HAS_ACCESS]->(a:FieldAccess {field: $field})
+    MATCH (j:Jar {path: $jar})-[:HAS_ACCESS]->(a:JavaFieldAccess {field: $field})
     WHERE $access = '' OR a.access = $access
     RETURN a.method AS method, a.methodOwner AS type, a.access AS access, a.lines AS lines, a.count AS sites
     ORDER BY access DESC, method
@@ -139,8 +140,8 @@
     jar: { type: string, description: "Path of the jar to read." }
     field: { type: string, description: "Field key `<binary owner>.<name>`, e.g. org.example.Util.CACHE (not the bare name)." }
   cypher: |
-    MATCH (j:Jar {path: $jar})-[:HAS_ACCESS]->(a:FieldAccess {field: $field})
-    OPTIONAL MATCH (a)-[:SAME_METHOD_CALL]->(c:MethodCall)
+    MATCH (j:Jar {path: $jar})-[:HAS_ACCESS]->(a:JavaFieldAccess {field: $field})
+    OPTIONAL MATCH (a)-[:SAME_METHOD_CALL]->(c:JavaMethodCall)
     WHERE c.calleeOwner STARTS WITH 'java.'
       AND c.calleeName IN ['put', 'putAll', 'putIfAbsent', 'computeIfAbsent', 'compute', 'merge',
                            'add', 'addAll', 'addFirst', 'addLast', 'offer', 'push', 'set',
@@ -162,7 +163,7 @@
     method: { type: string, default: "", description: "Method name; empty = any method of the type." }
     limit: { type: int, default: 200, description: "Maximum rows." }
   cypher: |
-    MATCH (j:Jar {path: $jar})-[:HAS_CALL]->(c:MethodCall {calleeOwner: $type})
+    MATCH (j:Jar {path: $jar})-[:HAS_CALL]->(c:JavaMethodCall {calleeOwner: $type})
     WHERE $method = '' OR c.calleeName = $method
     RETURN c.callee AS callee, c.caller AS caller, c.callerOwner AS callerType, c.lines AS lines, c.count AS sites
     ORDER BY callee, caller
@@ -193,7 +194,41 @@
     jar: { type: string, description: "Path of the jar to read." }
     limit: { type: int, default: 50, description: "Maximum rows." }
   cypher: |
-    MATCH (j:Jar {path: $jar})-[:HAS_CALL]->(c:MethodCall {internal: false})
+    MATCH (j:Jar {path: $jar})-[:HAS_CALL]->(c:JavaMethodCall {internal: false})
     RETURN c.calleeOwner AS type, sum(c.count) AS callSites, count(DISTINCT c.caller) AS callingMethods
     ORDER BY callSites DESC
+    LIMIT $limit
+
+- name: JavaHashedKeysWithoutHashCode
+  description: >-
+    Map and set fields whose declared key (a map's key, a set's element) is a class in the jar that
+    never overrides `hashCode` - it hashes by identity, so two equal-looking keys are two entries,
+    and a key the caller does not keep can never be found again. Read from the fields' generic
+    signatures, so it sees the key type a field declares, not keys of an undeclared type passed at
+    run time; a key type outside the jar is not judged here.
+  params:
+    jar: { type: string, description: "Path of the jar to read." }
+    limit: { type: int, default: 100, description: "Maximum rows." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_FIELD]->(f:JavaField)-[:KEYED_BY]->(k:JavaType)
+    WHERE k.hashCodeFrom = 'java.lang.Object' AND k.kind = 'class'
+    RETURN f.key AS field, f.genericType AS declaredAs, k.name AS keyType, k.equalsFrom AS equalsFrom,
+           f.isStatic AS isStatic, f.container AS container
+    ORDER BY isStatic DESC, field
+    LIMIT $limit
+
+- name: JavaFieldsHolding
+  description: >-
+    Fields that hold a given type - declared as it, or as a container of it (`List<T>`,
+    `Map<K, T>`, `T[]`) - by the fields' generic signatures. Works for any type, inside the jar or
+    not: `java.lang.Thread`, `java.lang.ClassLoader`, or a type of the jar's own.
+  params:
+    jar: { type: string, description: "Path of the jar to read." }
+    type: { type: string, description: "Binary name of the held type." }
+    limit: { type: int, default: 200, description: "Maximum rows." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_FIELD]->(f:JavaField)
+    WHERE f.type = $type OR $type IN f.typeArguments OR f.elementType = $type
+    RETURN f.key AS field, f.genericType AS declaredAs, f.container AS container, f.isStatic AS isStatic
+    ORDER BY isStatic DESC, field
     LIMIT $limit
