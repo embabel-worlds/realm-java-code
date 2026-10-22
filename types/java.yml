@@ -156,6 +156,9 @@
     sourcePath: "Source path of the declaring type."
     sourceKey: "`<jar path>!<sourcePath>`."
     spanKey: "`<sourceKey>#<line>#<name>`: the method's first line and the name expected there (the class name for a constructor). Absent when `line` is 0."
+    lines: { cardinality: LIST, type: int, description: "Every source line the method has code on, from its line-number table, ascending. A constructor's can run above its first statement, into the field initializers it runs." }
+    lastLine: { type: int, description: "The last line in `lines`." }
+    at: { cardinality: LIST, description: "`<binary owner>.<name>:<line>` for each of `lines`: what a stack frame's class, method and line spell, so a frame finds the one overload its line was in." }
   virtualJoins:
     - { anchorLabel: Jar, relationship: HAS_METHOD, keyField: path, recordKeyField: anchorKey, maxFanoutTotal: 30000, producer: javaJarMethods,
         description: "Every method in a jar; narrow with `{owner: '…'}` or `{name: '…'}` in the same MATCH." }
