@@ -7,7 +7,7 @@ query ends. Nothing is ingested, seeded or stored, and no source code is needed.
 
 ```cypher
 MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_FIELD]->(f:JavaField {isStatic: true, container: 'map'})
-OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:FieldAccess)-[:SAME_METHOD_CALL]->(c:MethodCall {calleeName: 'put'})
+OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:JavaFieldAccess)-[:SAME_METHOD_CALL]->(c:JavaMethodCall {calleeName: 'put'})
 RETURN f.key, count(DISTINCT a.method) AS addingMethods
 ```
 

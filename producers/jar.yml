@@ -24,3 +24,5 @@
 - { name: javaCallsFromMethod,   kind: jar, emit: calls,    by: caller }
 - { name: javaCallsToMethod,     kind: jar, emit: calls,    by: callee }
 - { name: javaMethodByKey,       kind: jar, emit: methods,  by: key }
+- { name: javaMethodAt,          kind: jar, emit: methods,  by: at }
+- { name: javaTypeByName,        kind: jar, emit: types,    by: name }

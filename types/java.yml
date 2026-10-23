@@ -10,16 +10,26 @@
 #   Jar ─IS_ARTIFACT▶ JavaArtifact      Jar ─HAS_PACKAGE / HAS_TYPE / HAS_FIELD / HAS_METHOD / HAS_ACCESS / HAS_CALL▶ …
 #   JavaPackage ─CONTAINS_TYPE▶ JavaType
 #   JavaType ─DECLARES_FIELD▶ JavaField,  ─DECLARES_METHOD▶ JavaMethod,  ─HAS_SUBCLASS / HAS_IMPLEMENTOR▶ JavaType
-#   JavaField ─ACCESSED_BY▶ FieldAccess
-#   JavaMethod ─MAKES_ACCESS▶ FieldAccess,  ─MAKES_CALL▶ MethodCall,  ─CALLED_BY▶ MethodCall
-#   FieldAccess ─IN_METHOD▶ JavaMethod,  ─SAME_METHOD_CALL▶ MethodCall     MethodCall ─TARGETS▶ JavaMethod (targets inside the jar)
+#   JavaField ─ACCESSED_BY▶ JavaFieldAccess
+#   JavaMethod ─MAKES_ACCESS▶ JavaFieldAccess,  ─MAKES_CALL▶ JavaMethodCall,  ─CALLED_BY▶ JavaMethodCall
+#   JavaFieldAccess ─IN_METHOD▶ JavaMethod,  ─SAME_METHOD_CALL▶ JavaMethodCall     JavaMethodCall ─TARGETS▶ JavaMethod (targets inside the jar)
 #
 # Every node's `id` is `<jar path>!<member>`, and every reference to another member has an `…Id`
 # twin (`ownerId`, `methodId`, `calleeId`), which is what the next hop keys on. Names are binary
 # class names, `pkg.Outer$Inner`, exactly as a heap dump or stack trace spells them, so another
 # realm joins a JavaType by `name` and a JavaField by `key` with no translation.
 #
-# A whole-jar hop (Jar ─HAS_CALL▶ MethodCall) reads every row of the jar; narrow it in the same
+# Each type is the Java child of a language-neutral parent the standard model declares —
+# JavaPackage:Package, JavaType:CodeType, JavaField:Field, JavaMethod:Method, JavaMethodCall:Call,
+# JavaFieldAccess:FieldAccess — so a query naming the parent reads Java and any other language a
+# realm adds. Types, fields, methods, calls and accesses carry `sourceKey` (and members `spanKey`),
+# which a source realm keys on to reach the code they compiled from.
+#
+# Generics come from the class files' signatures: a field's `genericType`, and for a map or set
+# its `keyType` (JavaField ─KEYED_BY▶ JavaType when the key type is in the jar). A type says which
+# class its `hashCode` and `equals` come from (`hashCodeFrom: 'java.lang.Object'` is identity).
+#
+# A whole-jar hop (Jar ─HAS_CALL▶ JavaMethodCall) reads every row of the jar; narrow it in the same
 # MATCH (`{calleeOwner: 'java.util.Map'}`), which the producer applies before rows reach the graph.
 
 - name: JavaArtifact
@@ -39,6 +49,7 @@
         description: "The jar's coordinate and checksum: `MATCH (j:Jar {path:$jar})-[:IS_ARTIFACT]->(a:JavaArtifact)`." }
 
 - name: JavaPackage
+  parents: [Package]
   description: "A Java package in a jar, with how many types it holds. Its types: CONTAINS_TYPE."
   properties:
     id: { identity: true, description: "`<jar path>!<package>`. Identity." }
@@ -50,6 +61,7 @@
         description: "Every package in a jar." }
 
 - name: JavaType
+  parents: [CodeType]
   description: "A class, interface, enum, record or annotation compiled into a jar, including nested, anonymous and local classes. `name` is the binary name (`a.b.Outer$Inner`), the form heap dumps and stack traces use. `superclass` and `interfaces` name supertypes wherever they live; HAS_SUBCLASS / HAS_IMPLEMENTOR walk down to subtypes in the same jar. Fields: DECLARES_FIELD. Methods: DECLARES_METHOD."
   properties:
     id: { identity: true, description: "`<jar path>!<binary class name>`. Identity; the key every hop from a type takes." }
@@ -69,6 +81,11 @@
     fields: { type: int, description: "Fields declared by this type (not inherited)." }
     staticFields: { type: int, description: "Static fields declared by this type." }
     methods: { type: int, description: "Methods, constructors and static initializer declared by this type." }
+    typeParameters: { cardinality: LIST, description: "Declared type parameter names, e.g. `K`, `V`." }
+    hashCodeFrom: "Binary name of the class whose `hashCode()` this type uses: itself, an ancestor, or `java.lang.Object` (identity). Empty for an interface, or when an ancestor outside the jar and the JDK decides it."
+    equalsFrom: "Binary name of the class whose `equals(Object)` this type uses, on the same terms as `hashCodeFrom`."
+    sourcePath: "Where its source sits in a source root: package path and source file, e.g. `com/x/Cache.java`."
+    sourceKey: "`<jar path>!<sourcePath>`: what a source realm joins on."
   virtualJoins:
     - { anchorLabel: Jar, relationship: HAS_TYPE, keyField: path, recordKeyField: anchorKey, producer: javaJarTypes,
         description: "Every type in a jar; narrow with `{name: '…'}` or `{packageName: '…'}` in the same MATCH." }
@@ -78,8 +95,15 @@
         description: "Types in the same jar that directly extend this one." }
     - { anchorLabel: JavaType, relationship: HAS_IMPLEMENTOR, keyField: id, recordKeyField: anchorKey, producer: javaImplementorsOf,
         description: "Types in the same jar that directly implement this interface." }
+    - { anchorLabel: JavaField, relationship: KEYED_BY, keyField: keyTypeId, recordKeyField: anchorKey, producer: javaTypeByName,
+        description: "The type a map field's keys or a set field's elements are declared as — what the container hashes — when it is in the jar." }
+    - { anchorLabel: JavaField, relationship: HOLDS_VALUE, keyField: valueTypeId, recordKeyField: anchorKey, producer: javaTypeByName,
+        description: "The type a map field's values are declared as, when it is in the jar." }
+    - { anchorLabel: JavaField, relationship: HOLDS_ELEMENT, keyField: elementTypeId, recordKeyField: anchorKey, producer: javaTypeByName,
+        description: "The type a collection, array, ThreadLocal or Reference field holds, when it is in the jar." }
 
 - name: JavaField
+  parents: [Field]
   description: "A field declared by a type in a jar. `key` is `Owner.name` with the binary owner name, the same `Owner.field` a heap dump's path to a GC root names. `container` says whether the declared type is a map, collection, array, ThreadLocal or Reference. Who reads or writes it: ACCESSED_BY."
   properties:
     id: { identity: true, description: "`<jar path>!<owner>.<field>`. Identity." }
@@ -88,11 +112,21 @@
     owner: "Binary name of the declaring type."
     ownerId: "The declaring JavaType's id."
     name: "Field name."
-    type: "Declared type; arrays as `T[]`."
+    type: "Declared type, erased; arrays as `T[]`."
+    genericType: "Declared type with its type arguments, as source writes it: `java.util.Map<com.x.Key, java.lang.String>`."
+    typeArguments: { cardinality: LIST, description: "The declared type's type arguments, erased to binary names." }
+    keyType: "For a map, its key type; for a set, its element type — what the container hashes. Empty otherwise."
+    keyTypeId: "`<jar path>!<keyType>`; KEYED_BY reaches the JavaType when it is in the jar."
+    valueType: "For a map, its value type."
+    valueTypeId: "`<jar path>!<valueType>`."
+    elementType: "For a collection, ThreadLocal or Reference, the type argument; for an array, the component type."
+    elementTypeId: "`<jar path>!<elementType>`."
     container: "`map`, `collection`, `array`, `threadlocal`, `reference` or `none`, by the declared type and its JDK supertypes."
     isStatic: { type: boolean, description: "A static field: one per class loader, reachable for as long as the class is." }
     isFinal: { type: boolean, description: "Declared final." }
     visibility: "`public`, `protected`, `package` or `private`."
+    sourcePath: "Source path of the declaring type."
+    sourceKey: "`<jar path>!<sourcePath>`."
   virtualJoins:
     - { anchorLabel: Jar, relationship: HAS_FIELD, keyField: path, recordKeyField: anchorKey, producer: javaJarFields,
         description: "Every field in a jar; narrow with `{isStatic: true}`, `{container: 'map'}` or `{key: '…'}` in the same MATCH." }
@@ -100,6 +134,7 @@
         description: "The fields one type declares." }
 
 - name: JavaMethod
+  parents: [Method]
   description: "A method, constructor or static initializer declared by a type in a jar. `key` is `Owner.name(param types)`; constructors are `<init>`, static initializers `<clinit>`, lambda bodies their synthetic `lambda$…` methods. Its calls: MAKES_CALL. Who calls it: CALLED_BY. Its field accesses: MAKES_ACCESS."
   properties:
     id: { identity: true, description: "`<jar path>!<method key>`. Identity." }
@@ -110,24 +145,33 @@
     name: "Method name; `<init>` for constructors, `<clinit>` for a static initializer."
     kind: "`method`, `constructor` or `static-initializer`."
     parameters: { cardinality: LIST, description: "Parameter types in order; arrays as `T[]`." }
-    returnType: "Return type; `void` for none."
+    returnType: "Return type, erased; `void` for none."
+    genericParameters: { cardinality: LIST, description: "Parameter types with type arguments, as source writes them." }
+    genericReturnType: "Return type with type arguments, e.g. `java.util.List<T>`."
     isStatic: { type: boolean, description: "A static method." }
     isAbstract: { type: boolean, description: "Abstract or interface method without a body." }
     isSynthetic: { type: boolean, description: "Compiler-generated: bridge methods, lambda bodies, accessors." }
     visibility: "`public`, `protected`, `package` or `private`."
     line: { type: int, description: "First source line of the body from debug info; 0 when absent or abstract." }
+    sourcePath: "Source path of the declaring type."
+    sourceKey: "`<jar path>!<sourcePath>`."
+    spanKey: "`<sourceKey>#<line>#<name>`: the method's first line and the name expected there (the class name for a constructor). Absent when `line` is 0."
+    lines: { cardinality: LIST, type: int, description: "Every source line the method has code on, from its line-number table, ascending. A constructor's can run above its first statement, into the field initializers it runs." }
+    lastLine: { type: int, description: "The last line in `lines`." }
+    at: { cardinality: LIST, description: "`<binary owner>.<name>:<line>` for each of `lines`: what a stack frame's class, method and line spell, so a frame finds the one overload its line was in." }
   virtualJoins:
-    - { anchorLabel: Jar, relationship: HAS_METHOD, keyField: path, recordKeyField: anchorKey, producer: javaJarMethods,
+    - { anchorLabel: Jar, relationship: HAS_METHOD, keyField: path, recordKeyField: anchorKey, maxFanoutTotal: 30000, producer: javaJarMethods,
         description: "Every method in a jar; narrow with `{owner: '…'}` or `{name: '…'}` in the same MATCH." }
     - { anchorLabel: JavaType, relationship: DECLARES_METHOD, keyField: id, recordKeyField: anchorKey, producer: javaMethodsOfType,
         description: "The methods one type declares." }
-    - { anchorLabel: FieldAccess, relationship: IN_METHOD, keyField: methodId, recordKeyField: anchorKey, producer: javaMethodByKey,
+    - { anchorLabel: JavaFieldAccess, relationship: IN_METHOD, keyField: methodId, recordKeyField: anchorKey, producer: javaMethodByKey,
         description: "The method that made a field access." }
-    - { anchorLabel: MethodCall, relationship: TARGETS, keyField: calleeId, recordKeyField: anchorKey, producer: javaMethodByKey,
+    - { anchorLabel: JavaMethodCall, relationship: TARGETS, keyField: calleeId, recordKeyField: anchorKey, producer: javaMethodByKey,
         description: "The method a call targets, when the jar declares it (none for JDK or other-library targets)." }
 
-- name: FieldAccess
-  description: "Every place one method touches one field, one way: READ (getfield/getstatic) or WRITE (putfield/putstatic, i.e. assignment), with source lines. Adding to a collection held in a field is a READ of the field plus a MethodCall (`put`, `add`) in the same method, not a WRITE. The method: IN_METHOD."
+- name: JavaFieldAccess
+  parents: [FieldAccess]
+  description: "Every place one method touches one field, one way: READ (getfield/getstatic) or WRITE (putfield/putstatic, i.e. assignment), with source lines. Adding to a collection held in a field is a READ of the field plus a JavaMethodCall (`put`, `add`) in the same method, not a WRITE. The method: IN_METHOD."
   properties:
     id: { identity: true, description: "`<jar path>!<method> READ|WRITE <field>`. Identity." }
     jarPath: "The jar path."
@@ -144,6 +188,9 @@
     firstLine: { type: int, description: "The first of `lines`." }
     count: { type: int, description: "Distinct source lines with this access." }
     internal: { type: boolean, description: "True when the field's owner is in the jar." }
+    sourcePath: "Source path of the accessing method's type."
+    sourceKey: "`<jar path>!<sourcePath>`."
+    spanKey: "`<sourceKey>#<firstLine>#<fieldName>`."
   virtualJoins:
     - { anchorLabel: Jar, relationship: HAS_ACCESS, keyField: path, recordKeyField: anchorKey, maxFanoutTotal: 30000, producer: javaJarAccesses,
         description: "Every field access in a jar; narrow with `{field: '…'}` or `{access: 'WRITE'}` in the same MATCH. Works for fields outside the jar, e.g. `{field: 'java.lang.System.out'}`." }
@@ -152,7 +199,8 @@
     - { anchorLabel: JavaMethod, relationship: MAKES_ACCESS, keyField: id, recordKeyField: anchorKey, producer: javaAccessesInMethod,
         description: "Every field one method reads or writes." }
 
-- name: MethodCall
+- name: JavaMethodCall
+  parents: [Call]
   description: "Every call from one method to one target method or constructor, with source lines. The target is named as the bytecode names it (the static receiver type): `callee`, `calleeOwner`, `calleeName` are always set, so calls into the JDK or other libraries are matched by property (`calleeOwner = 'java.util.Map' AND calleeName = 'put'`). The target method, when the jar declares it: TARGETS."
   properties:
     id: { identity: true, description: "`<jar path>!<caller> CALLS <callee>`. Identity." }
@@ -169,6 +217,9 @@
     firstLine: { type: int, description: "The first of `lines`." }
     count: { type: int, description: "Distinct source lines with this call." }
     internal: { type: boolean, description: "True when the target's owner is in the jar." }
+    sourcePath: "Source path of the calling method's type."
+    sourceKey: "`<jar path>!<sourcePath>`."
+    spanKey: "`<sourceKey>#<firstLine>#<calleeName>` (the class name for a constructor call)."
   virtualJoins:
     - { anchorLabel: Jar, relationship: HAS_CALL, keyField: path, recordKeyField: anchorKey, maxFanoutTotal: 30000, producer: javaJarCalls,
         description: "Every call in a jar; narrow with `{calleeOwner: '…'}` and `{calleeName: '…'}` in the same MATCH — e.g. who calls `java.lang.System.exit`." }
@@ -176,5 +227,5 @@
         description: "Every call one method makes." }
     - { anchorLabel: JavaMethod, relationship: CALLED_BY, keyField: id, recordKeyField: anchorKey, producer: javaCallsToMethod,
         description: "Every call to one method from elsewhere in the jar." }
-    - { anchorLabel: FieldAccess, relationship: SAME_METHOD_CALL, keyField: methodId, recordKeyField: anchorKey, producer: javaCallsFromMethod,
+    - { anchorLabel: JavaFieldAccess, relationship: SAME_METHOD_CALL, keyField: methodId, recordKeyField: anchorKey, producer: javaCallsFromMethod,
         description: "The calls made by the method that made this field access — e.g. whether the method that reads a map field also calls `put` or `remove`." }

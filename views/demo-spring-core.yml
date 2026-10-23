@@ -35,7 +35,7 @@
     MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_FIELD]->(f:JavaField {isStatic: true, container: 'map'})
     WHERE NOT f.owner STARTS WITH 'org.springframework.cglib' AND NOT f.owner STARTS WITH 'org.springframework.asm'
       AND NOT f.owner STARTS WITH 'org.springframework.objenesis' AND NOT f.owner STARTS WITH 'org.springframework.javapoet'
-    OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:FieldAccess)-[:SAME_METHOD_CALL]->(c:MethodCall)
+    OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:JavaFieldAccess)-[:SAME_METHOD_CALL]->(c:JavaMethodCall)
     WHERE c.calleeOwner STARTS WITH 'java.'
       AND c.calleeName IN ['put', 'putAll', 'putIfAbsent', 'computeIfAbsent', 'compute', 'merge', 'remove', 'clear']
     WITH f, collect(DISTINCT CASE WHEN c.calleeName IN ['remove', 'clear'] THEN NULL ELSE a.method END) AS adding,
