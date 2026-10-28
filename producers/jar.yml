@@ -12,6 +12,8 @@
 - { name: javaJarMethods,  kind: jar, emit: methods }
 - { name: javaJarAccesses, kind: jar, emit: accesses }
 - { name: javaJarCalls,    kind: jar, emit: calls }
+- { name: javaJarCasts,    kind: jar, emit: casts }
+- { name: javaJarMethodBodies, kind: jar, emit: methodBodies }
 
 # Hops from a member already in hand.
 - { name: javaTypesInPackage,    kind: jar, emit: types,    by: packageName }
@@ -26,3 +28,6 @@
 - { name: javaMethodByKey,       kind: jar, emit: methods,  by: key }
 - { name: javaMethodAt,          kind: jar, emit: methods,  by: at }
 - { name: javaTypeByName,        kind: jar, emit: types,    by: name }
+- { name: javaCastsInMethod,     kind: jar, emit: casts,    by: method }
+- { name: javaCastsToType,       kind: jar, emit: casts,    by: targetType }
+- { name: javaBodiesOfMethod,    kind: jar, emit: methodBodies, by: method }

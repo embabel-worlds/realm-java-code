@@ -232,3 +232,67 @@
     RETURN f.key AS field, f.genericType AS declaredAs, f.container AS container, f.isStatic AS isStatic
     ORDER BY isStatic DESC, field
     LIMIT $limit
+
+# Casts and method bodies are read from the instructions, so they count what the compiler wrote:
+# a generic call's erased result is a cast nobody typed, and a string switch is two switches.
+
+- name: JavaCastTargets
+  description: >-
+    What a jar casts to and tests with instanceof at run time, per target type: how many casts, how
+    many instanceof tests and in how many methods, most first. Read from the instructions, so it
+    includes the casts the compiler adds for erased generics (`String s = list.get(0)`); narrow to
+    `kind` cast or instanceof, or to types in the jar with `internalOnly`.
+  params:
+    jar: { type: string, description: "Path of the jar to read." }
+    kind: { type: string, default: "", description: "cast or instanceof; empty = both." }
+    internalOnly: { type: boolean, default: false, description: "Only target types the jar declares." }
+    limit: { type: int, default: 100, description: "Maximum rows." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_CAST]->(c:JavaCast)
+    WHERE ($kind = '' OR c.kind = $kind) AND (NOT $internalOnly OR c.internal)
+    RETURN c.targetType AS targetType,
+           sum(CASE WHEN c.kind = 'cast' THEN 1 ELSE 0 END) AS casts,
+           sum(CASE WHEN c.kind = 'instanceof' THEN 1 ELSE 0 END) AS instanceofs,
+           count(DISTINCT c.method) AS methods
+    ORDER BY casts + instanceofs DESC, targetType
+    LIMIT $limit
+
+- name: JavaCastSites
+  description: >-
+    Every cast and instanceof of one type in a jar, by binary name (`java.util.Map$Entry`, an array
+    as `java.lang.String[]`): the method, line and whether it is in a lambda or a compiler-made
+    method. "Where does this program downcast to X?"
+  params:
+    jar: { type: string, description: "Path of the jar to read." }
+    type: { type: string, description: "Binary name of the target type, e.g. java.util.Map$Entry." }
+    kind: { type: string, default: "", description: "cast or instanceof; empty = both." }
+    limit: { type: int, default: 200, description: "Maximum rows." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_CAST]->(c:JavaCast {targetType: $type})
+    WHERE $kind = '' OR c.kind = $kind
+    RETURN c.method AS method, c.kind AS kind, c.line AS line, c.lambda AS lambda,
+           c.inSyntheticMethod AS inSyntheticMethod, c.spanKey AS spanKey
+    ORDER BY method, line
+    LIMIT $limit
+
+- name: JavaMethodComplexity
+  description: >-
+    The jar's methods ranked by conditional branches, with loops (back edges), switches, exception
+    handlers, casts, instanceof tests, instruction count and line span, each method's lambdas
+    included. Counted from the bytecode: `&&`, `||` and `?:` are branches, and a string switch is
+    two switches. Narrow to one type with `type`.
+  params:
+    jar: { type: string, description: "Path of the jar to read." }
+    type: { type: string, default: "", description: "Binary class name; empty = every type." }
+    limit: { type: int, default: 50, description: "Maximum rows." }
+  cypher: |
+    MATCH (j:Jar {path: $jar})-[:HAS_METHOD_BODY]->(b:JavaMethodBody)
+    WHERE b.method IS NOT NULL AND NOT b.isBridge AND ($type = '' OR b.owner = $type)
+    WITH b.method AS method, sum(b.branches) AS branches, sum(b.backEdges) AS loops,
+         sum(b.switches) AS switches, sum(b.handlers) AS handlers, sum(b.casts) AS casts,
+         sum(b.instanceofs) AS instanceofs, sum(b.instructions) AS instructions,
+         max(CASE WHEN b.isLambda THEN 0 ELSE b.lineSpan END) AS lineSpan,
+         sum(CASE WHEN b.isLambda THEN 1 ELSE 0 END) AS lambdas
+    RETURN method, branches, loops, switches, handlers, casts, instanceofs, instructions, lineSpan, lambdas
+    ORDER BY branches DESC, instructions DESC, method
+    LIMIT $limit

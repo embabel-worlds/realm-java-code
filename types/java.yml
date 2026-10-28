@@ -13,6 +13,8 @@
 #   JavaField ─ACCESSED_BY▶ JavaFieldAccess
 #   JavaMethod ─MAKES_ACCESS▶ JavaFieldAccess,  ─MAKES_CALL▶ JavaMethodCall,  ─CALLED_BY▶ JavaMethodCall
 #   JavaFieldAccess ─IN_METHOD▶ JavaMethod,  ─SAME_METHOD_CALL▶ JavaMethodCall     JavaMethodCall ─TARGETS▶ JavaMethod (targets inside the jar)
+#   JavaMethod ─MAKES_CAST▶ JavaCast,  ─HAS_BODY▶ JavaMethodBody     JavaType ─CAST_BY▶ JavaCast
+#   JavaCast ─CAST_IN▶ JavaMethod,  ─CASTS_TO▶ JavaType (targets inside the jar)
 #
 # Every node's `id` is `<jar path>!<member>`, and every reference to another member has an `…Id`
 # twin (`ownerId`, `methodId`, `calleeId`), which is what the next hop keys on. Names are binary
@@ -28,6 +30,10 @@
 # Generics come from the class files' signatures: a field's `genericType`, and for a map or set
 # its `keyType` (JavaField ─KEYED_BY▶ JavaType when the key type is in the jar). A type says which
 # class its `hashCode` and `equals` come from (`hashCodeFrom: 'java.lang.Object'` is identity).
+#
+# Casts and method bodies are read from the instructions: what the compiler wrote, which is not
+# always what the source says (a generic call's erased result is a cast nobody typed; a string
+# switch is two switch instructions). JavaCast and JavaMethodBody say how.
 #
 # A whole-jar hop (Jar ─HAS_CALL▶ JavaMethodCall) reads every row of the jar; narrow it in the same
 # MATCH (`{calleeOwner: 'java.util.Map'}`), which the producer applies before rows reach the graph.
@@ -101,6 +107,8 @@
         description: "The type a map field's values are declared as, when it is in the jar." }
     - { anchorLabel: JavaField, relationship: HOLDS_ELEMENT, keyField: elementTypeId, recordKeyField: anchorKey, producer: javaTypeByName,
         description: "The type a collection, array, ThreadLocal or Reference field holds, when it is in the jar." }
+    - { anchorLabel: JavaCast, relationship: CASTS_TO, keyField: targetTypeId, recordKeyField: anchorKey, producer: javaTypeByName,
+        description: "The type a cast or instanceof names, when it is in the jar." }
 
 - name: JavaField
   parents: [Field]
@@ -135,7 +143,7 @@
 
 - name: JavaMethod
   parents: [Method]
-  description: "A method, constructor or static initializer declared by a type in a jar. `key` is `Owner.name(param types)`; constructors are `<init>`, static initializers `<clinit>`, lambda bodies their synthetic `lambda$…` methods. Its calls: MAKES_CALL. Who calls it: CALLED_BY. Its field accesses: MAKES_ACCESS."
+  description: "A method, constructor or static initializer declared by a type in a jar. `key` is `Owner.name(param types)`; constructors are `<init>`, static initializers `<clinit>`. A lambda has no row of its own: its calls, accesses and casts belong to the method it is written in. Its calls: MAKES_CALL. Who calls it: CALLED_BY. Its field accesses: MAKES_ACCESS. Its casts: MAKES_CAST. Its branch, loop and handler counts: HAS_BODY."
   properties:
     id: { identity: true, description: "`<jar path>!<method key>`. Identity." }
     jarPath: "The jar path."
@@ -168,6 +176,8 @@
         description: "The method that made a field access." }
     - { anchorLabel: JavaMethodCall, relationship: TARGETS, keyField: calleeId, recordKeyField: anchorKey, producer: javaMethodByKey,
         description: "The method a call targets, when the jar declares it (none for JDK or other-library targets)." }
+    - { anchorLabel: JavaCast, relationship: CAST_IN, keyField: methodId, recordKeyField: anchorKey, producer: javaMethodByKey,
+        description: "The method a cast or instanceof was written in." }
 
 - name: JavaFieldAccess
   parents: [FieldAccess]
@@ -229,3 +239,69 @@
         description: "Every call to one method from elsewhere in the jar." }
     - { anchorLabel: JavaFieldAccess, relationship: SAME_METHOD_CALL, keyField: methodId, recordKeyField: anchorKey, producer: javaCallsFromMethod,
         description: "The calls made by the method that made this field access — e.g. whether the method that reads a map field also calls `put` or `remove`." }
+
+- name: JavaCast
+  description: "One `checkcast` or `instanceof` instruction in a method body: what the program casts, or tests, at run time. `kind` is `cast` or `instanceof`; `targetType` the type named (an array as `T[]`). Bytecode, not source: a generic call's erased result (`String s = list.get(0)`) is a cast the source never wrote, a pattern match (`o instanceof Foo f`) is an instanceof AND a cast, a bridge method casts its argument, and a primitive conversion (`(int) x`) or boxing is not a cast at all. `inSyntheticMethod` marks casts in compiler-made methods. A cast in a lambda belongs to the method the lambda is written in; `lambda` names the compiled lambda. Its method: CAST_IN. The type, when the jar declares it: CASTS_TO."
+  properties:
+    id: { identity: true, description: "`<jar path>!<key>`. Identity." }
+    jarPath: "The jar path."
+    key: "`<method key> <kind> <targetType> #<ordinal>`, with the compiled body's key (a lambda's own name, a bridge's `… returns <type>`)."
+    kind: "`cast` (checkcast) or `instanceof`."
+    targetType: "Type named, binary, arrays as `T[]`, e.g. `java.util.Map$Entry`, `java.lang.String[]`."
+    targetTypeId: "`<jar path>!<targetType>`; CASTS_TO reaches the JavaType when it is in the jar."
+    targetElementType: "`targetType` without array brackets: `java.lang.String` for `java.lang.String[]`."
+    isArray: { type: boolean, description: "The target is an array type." }
+    internal: { type: boolean, description: "The target (its element type, for an array) is a type in the jar." }
+    method: "Key of the method the instruction was written in, as JavaMethod's `key`. Absent only inside a synthetic accessor."
+    methodId: "That JavaMethod's id."
+    methodOwner: "Binary name of the method's type."
+    methodName: "The method's name."
+    lambda: "The compiled lambda body the instruction is in (`lambda$parse$0`), when it is in one."
+    ordinal: { type: int, description: "Position among the compiled body's casts and instanceofs, from 1, in bytecode order." }
+    line: { type: int, description: "Source line from debug info; absent without it." }
+    inSyntheticMethod: { type: boolean, description: "The instruction is in a compiler-made method: a lambda body, a bridge, an accessor." }
+    sourcePath: "Source path of the method's type."
+    sourceKey: "`<jar path>!<sourcePath>`."
+    spanKey: "`<sourceKey>#<line>#<simple name of the target>`, the line and the word a source realm expects there. Absent without a line."
+  virtualJoins:
+    - { anchorLabel: Jar, relationship: HAS_CAST, keyField: path, recordKeyField: anchorKey, maxFanoutTotal: 30000, producer: javaJarCasts,
+        description: "Every cast and instanceof in a jar; narrow with `{targetType: '…'}`, `{kind: 'instanceof'}` or `{methodOwner: '…'}` in the same MATCH." }
+    - { anchorLabel: JavaMethod, relationship: MAKES_CAST, keyField: id, recordKeyField: anchorKey, producer: javaCastsInMethod,
+        description: "The casts and instanceofs one method makes, its lambdas' included." }
+    - { anchorLabel: JavaType, relationship: CAST_BY, keyField: id, recordKeyField: anchorKey, producer: javaCastsToType,
+        description: "Every cast to, or instanceof test of, one type in the jar. For a type outside the jar, match `targetType` on HAS_CAST instead." }
+
+- name: JavaMethodBody
+  description: "What one compiled method body holds, counted from its instructions: conditional branches, loop back-edges, switches, exception handlers, casts, instanceofs, instruction count and line span. Abstract and native methods have none. A lambda body is its own row, belonging (`method`) to the method it is written in: HAS_BODY from a JavaMethod returns its body and one per lambda in it (`isLambda`), so sum them for the method as written. Bytecode, not source: `&&`, `||` and `?:` are branches; a string switch is two switches plus an equals branch per case; `finally` code is copied into each exit path and counted per copy; Kotlin inline functions report lines past the file's end, stretching `lastLine` and `lineSpan`."
+  properties:
+    id: { identity: true, description: "`<jar path>!<key>`. Identity." }
+    jarPath: "The jar path."
+    key: "The compiled body's key: the method's own key, a lambda's (`Owner.lambda$parse$0(…)`), or for a bridge, which shares its method's key, `<method key> returns <type>`."
+    method: "Key of the JavaMethod the body belongs to; absent for a synthetic accessor."
+    methodId: "That JavaMethod's id."
+    owner: "Binary name of the declaring type."
+    ownerId: "The declaring JavaType's id."
+    name: "Compiled name: the method's, or `lambda$…`."
+    returnType: "Return type, erased; arrays as `T[]`."
+    isSynthetic: { type: boolean, description: "Compiler-made: a lambda body, a bridge, an accessor." }
+    isBridge: { type: boolean, description: "A bridge method forwarding to the method it shares a key with." }
+    isLambda: { type: boolean, description: "A lambda body." }
+    branches: { type: int, description: "Conditional jumps: if, &&, ||, ?:, a loop's test, a null check." }
+    backEdges: { type: int, description: "Jumps to earlier code: one per compiled loop." }
+    switches: { type: int, description: "tableswitch and lookupswitch instructions." }
+    handlers: { type: int, description: "Distinct exception handlers: a catch, a multi-catch, a finally, a synchronized block's release." }
+    catchAnyHandlers: { type: int, description: "Handlers that catch anything: finally and synchronized." }
+    casts: { type: int, description: "checkcast instructions." }
+    instanceofs: { type: int, description: "instanceof instructions." }
+    instructions: { type: int, description: "Bytecode instructions, a size measure." }
+    line: { type: int, description: "Lowest line in the body's line table." }
+    lastLine: { type: int, description: "Highest line in it." }
+    lineSpan: { type: int, description: "`lastLine - line + 1`." }
+    sourcePath: "Source path of the declaring type."
+    sourceKey: "`<jar path>!<sourcePath>`."
+    spanKey: "`<sourceKey>#<line>#<name>`, as JavaMethod's."
+  virtualJoins:
+    - { anchorLabel: Jar, relationship: HAS_METHOD_BODY, keyField: path, recordKeyField: anchorKey, maxFanoutTotal: 30000, producer: javaJarMethodBodies,
+        description: "Every method body in a jar; narrow with `{owner: '…'}` in the same MATCH." }
+    - { anchorLabel: JavaMethod, relationship: HAS_BODY, keyField: id, recordKeyField: anchorKey, producer: javaBodiesOfMethod,
+        description: "The method's compiled body and one per lambda written in it." }

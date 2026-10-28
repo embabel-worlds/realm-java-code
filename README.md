@@ -1,7 +1,7 @@
 # realm-java-code
 
 Any Java jar as a graph, read on demand. Pin a jar by path and traverse its packages, types,
-fields, methods, field accesses and calls. The jar is read by the appliance's `jar` producer kind
+fields, methods, field accesses and calls, and the casts and control flow of its method bodies. The jar is read by the appliance's `jar` producer kind
 (ArchUnit over the class files) when a query reaches it; the nodes are virtual and gone when the
 query ends. Nothing is ingested, seeded or stored, and no source code is needed.
 

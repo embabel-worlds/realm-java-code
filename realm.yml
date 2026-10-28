@@ -4,7 +4,9 @@ description: |
   its packages and types (with superclass and interfaces), fields (with whether each is a map,
   collection, array, ThreadLocal or Reference), methods, which methods read and write which
   fields, and which methods call which - into the jar or out to the JDK and other libraries -
-  with source lines from debug info.
+  with source lines from debug info. And what the program casts at run time: every checkcast and
+  instanceof, by method and line, and each method's branches, loops, switches and handlers as
+  compiled.
 
   Nothing is ingested and nothing is stored. Pin a jar by path and traverse:
   `MATCH (j:Jar {path:'data/jars/x.jar'})-[:HAS_TYPE]->(t:JavaType)`. Paths resolve against
