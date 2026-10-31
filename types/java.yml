@@ -32,15 +32,27 @@
 # A whole-jar hop (Jar ─HAS_CALL▶ JavaMethodCall) reads every row of the jar; narrow it in the same
 # MATCH (`{calleeOwner: 'java.util.Map'}`), which the producer applies before rows reach the graph.
 
+# The jar is the Maven ecosystem's Artifact (realm-code-model types/artifact.yml): `parents: [Artifact]`
+# puts the shared label on every jar this realm reads, so `(j:Jar {path:$jar})-[:IS_ARTIFACT]->(a:Artifact)`
+# is answered here and by any other ecosystem's realm alike. The contract's `ecosystem` and `name` are
+# computed per row by the `javaJarArtifact` producer (producers/jar.yml); `version` is the row's own.
+# `id`, the description and identity are restated because a child inherits properties and labels, not
+# those; visibility and userAnchor are the defaults here as on every type in this realm.
 - name: JavaArtifact
-  description: "The jar itself: coordinate, file, SHA-256, type count. Reached from a pinned jar: `MATCH (j:Jar {path:$jar})-[:IS_ARTIFACT]->(a:JavaArtifact)`. The coordinate is read from the jar: `groupId:artifactId:version` from Maven metadata, `title:version` from the manifest, else the file name."
+  parents: [Artifact]
+  description: "The jar itself: coordinate, file, SHA-256, type count. Reached from a pinned jar: `MATCH (j:Jar {path:$jar})-[:IS_ARTIFACT]->(a:JavaArtifact)`. It is an Artifact: name :Artifact to read every ecosystem, :JavaArtifact for jars alone; `ecosystem` is 'maven' and `name` is `groupId:artifactId`. The coordinate is read from the jar: `groupId:artifactId:version` from Maven metadata, `title:version` from the manifest, else the file name."
   properties:
     id: { identity: true, description: "The jar path as the query gave it. Identity." }
     jarPath: "The jar path as the query gave it."
     coordinate: "The jar's coordinate as described above."
     groupId: "Maven group id, when the jar carries Maven metadata."
     artifactId: "Maven artifact id, or the manifest's Implementation-Title."
-    version: "Version from Maven metadata or the manifest."
+    version: "Version from Maven metadata or the manifest; null when the coordinate is only the file name. The Artifact contract's `version`."
+    # The Artifact contract, computed by the producer. `name` is the coordinate without its version, in
+    # whichever of the three forms the jar allowed: `groupId:artifactId` with Maven metadata, the
+    # manifest's title alone, else the file name — so a jar that says nothing about itself still has one.
+    ecosystem: "'maven' on every jar: a jar is the Maven ecosystem's unit even when it carries no Maven metadata."
+    name: "`groupId:artifactId` from Maven metadata, the manifest's Implementation-Title when that is all the jar says, else the file name. The Artifact contract's `name`: the coordinate without its version."
     fileName: "The jar's file name."
     sha256: "SHA-256 of the jar file: which exact build was read."
     types: { type: int, description: "Classes, interfaces, enums, records and annotations in the jar." }

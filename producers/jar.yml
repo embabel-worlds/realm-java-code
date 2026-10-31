@@ -5,7 +5,20 @@
 # `id` / `…Id` a row from the previous hop already carries.
 
 # Whole-jar collections, anchored on a pinned path: (j:Jar {path: '…'}).
-- { name: javaJarArtifact, kind: jar, emit: artifact }
+#
+# `javaJarArtifact` also projects the Artifact contract (realm-code-model types/artifact.yml) onto its one
+# row, since JavaArtifact is `parents: [Artifact]`: `compute:` is one Cypher expression per property over
+# the record bound as `r` — the `artifact` collection's `coordinate`, `groupId`, `artifactId`, `version`,
+# `fileName`, `sha256`, `types` (the `jar` kind carries `compute:`; engine JarProducer). `name` is the
+# coordinate without its version in whichever form the jar allowed: a jar with Maven metadata has a groupId,
+# one with only a manifest title has an artifactId and no groupId, one with neither has only the file name
+# as its coordinate (engine JarCoordinate.parts). `version` is the row's own already.
+- name: javaJarArtifact
+  kind: jar
+  emit: artifact
+  compute:
+    ecosystem: "'maven'"
+    name: "CASE WHEN r.groupId IS NOT NULL THEN r.groupId + ':' + r.artifactId WHEN r.artifactId IS NOT NULL THEN r.artifactId ELSE r.coordinate END"
 - { name: javaJarPackages, kind: jar, emit: packages }
 - { name: javaJarTypes,    kind: jar, emit: types }
 - { name: javaJarFields,   kind: jar, emit: fields }

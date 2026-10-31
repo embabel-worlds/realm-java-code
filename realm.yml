@@ -15,7 +15,7 @@ description: |
   Bytecode only: no source is needed, and none is read. Ships spring-core 6.2.18 as an example
   jar, with three demo views over it; every other view takes any jar.
   Requires the appliance's `jar` producer kind.
-version: 0.1.0
+version: 0.1.1
 maturity: experimental
 url: https://github.com/embabel-worlds/realm-java-code
 author: Rod Johnson
@@ -25,3 +25,4 @@ tags:
   - bytecode
   - code
   - archunit
+  - artifact      # brings a child of the shared Artifact label (JavaArtifact)

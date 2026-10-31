@@ -5,7 +5,9 @@ fields, methods, field accesses and calls. The jar is read by the appliance's `j
 (ArchUnit over the class files) when a query reaches it; the nodes are virtual and gone when the
 query ends. Nothing is ingested, seeded or stored, and no source code is needed.
 
-**Install [realm-code-model](https://github.com/embabel-worlds/realm-code-model) with it.** This realm's types extend parents declared there (`Package`, `CodeType`, `Field`, `Method`, `Call`, `FieldAccess`). Without it the realm still loads, but its types lose those parents, so a query that names a parent finds none of its rows.
+**Install [realm-code-model](https://github.com/embabel-worlds/realm-code-model) with it.** This realm's types extend parents declared there (`Package`, `CodeType`, `Field`, `Method`, `Call`, `FieldAccess`, and `Artifact` for the jar itself). Without it the realm still loads, but its types lose those parents, so a query that names a parent finds none of its rows.
+
+The jar is an `Artifact` (`JavaArtifact`, `parents: [Artifact]`): `(j:Jar {path: $jar})-[:IS_ARTIFACT]->(a:Artifact)` reads it under the shared label with `ecosystem: 'maven'`, `name` (`groupId:artifactId`, or what little the manifest or file name says) and `version`, beside the jar's own `coordinate`, `sha256` and `types`.
 
 ```cypher
 MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_FIELD]->(f:JavaField {isStatic: true, container: 'map'})
