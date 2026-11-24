@@ -4,9 +4,9 @@
 
 - name: SpringCoreRepackagedLibraries
   description: >-
-    Demo, spring-core: the third-party libraries Spring repackages inside spring-core under its own
-    namespace (cglib, ASM, Objenesis, JavaPoet), with type counts - code you ship without a
-    dependency that says so.
+    Demo: libraries spring-core repackages in its own namespace, with type counts. cglib, ASM,
+    Objenesis and JavaPoet inside spring-core 6.2.18: code you ship without a dependency that says
+    so. Only those four namespaces; pins the demo jar, so not for any other jar.
   cypher: |
     MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_PACKAGE]->(p:JavaPackage)
     WHERE p.name STARTS WITH 'org.springframework.cglib' OR p.name STARTS WITH 'org.springframework.asm'
@@ -17,9 +17,10 @@
 
 - name: SpringCoreReferenceCaches
   description: >-
-    Demo, spring-core: fields declared as Spring's ConcurrentReferenceHashMap (its soft/weak
-    reference cache, which a heap dump shows as Segment and Reference arrays), whether static, and
-    who declares them.
+    Demo: spring-core fields of type ConcurrentReferenceHashMap, and their owners. Spring's
+    soft/weak reference cache, which a heap dump shows as Segment and Reference arrays, with whether
+    each field is static. Only fields declared as that exact type, not subclasses; pins the demo
+    jar, at most 200 rows.
   cypher: |
     MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_FIELD]->(f:JavaField {type: 'org.springframework.util.ConcurrentReferenceHashMap'})
     RETURN f.key AS field, f.owner AS declaredBy, f.isStatic AS isStatic, f.isFinal AS isFinal
@@ -28,9 +29,9 @@
 
 - name: SpringCoreStaticMaps
   description: >-
-    Demo, spring-core: static map fields in Spring's own packages (not the repackaged libraries),
-    with how many methods add to a JDK map and how many remove - JavaStaticContainers narrowed to
-    Spring's code.
+    Demo: spring-core's static map fields, by methods that add vs remove. Spring's own packages, not
+    the repackaged libraries: JavaStaticContainers narrowed to Spring's code, counting JDK map puts
+    and removes made in the same method. Pins the demo jar; at most 50 rows.
   cypher: |
     MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_FIELD]->(f:JavaField {isStatic: true, container: 'map'})
     WHERE NOT f.owner STARTS WITH 'org.springframework.cglib' AND NOT f.owner STARTS WITH 'org.springframework.asm'
