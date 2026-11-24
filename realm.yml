@@ -19,6 +19,9 @@ description: |
   Requires the appliance's `jar` producer kind.
 version: 0.1.1
 maturity: experimental
+requires:
+  # Declares the parents its types extend (Package, CodeType, Field, Method, Call, FieldAccess).
+  code-model: "[0.1.0,1.0.0)"
 url: https://github.com/embabel-worlds/realm-java-code
 author: Rod Johnson
 tags:
