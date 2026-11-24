@@ -9,4 +9,5 @@
 set -e
 cd "$(dirname "$0")/.."
 : "${AUTH:?set AUTH=user:pass for the target appliance}"
-APPLIANCE="${APPLIANCE:-http://127.0.0.1:8080}" exec python3 tests/verify.py
+# -B: no __pycache__ beside the sources, so a run leaves the checkout exactly as it found it.
+APPLIANCE="${APPLIANCE:-http://127.0.0.1:8080}" exec python3 -B tests/verify.py

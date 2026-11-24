@@ -100,7 +100,10 @@ su = classes[SU]
 p = (results.get("JavaTypeProfile") or [{}])[0]
 check("JavaTypeProfile superclass", p.get("superclass") == su.superclass, f"{p.get('superclass')}")
 check("JavaTypeProfile fields", p.get("fields") == len(su.fields), f"{p.get('fields')} vs {len(su.fields)}")
-check("JavaTypeProfile methods", p.get("methods") == len(su.methods), f"{p.get('methods')} vs {len(su.methods)}")
+# A lambda body is compiled to a synthetic `lambda$…` method but has no row of its own (its code
+# belongs to the method it is written in), so the type's method count leaves it out.
+declared = [m for m in su.methods if not (m["flags"] & ACC_SYNTHETIC and m["name"].startswith("lambda$"))]
+check("JavaTypeProfile methods", p.get("methods") == len(declared), f"{p.get('methods')} vs {len(declared)}")
 
 fields = {row["name"] for row in results.get("JavaTypeFields") or []}
 truth = {f["name"] for f in su.fields}
