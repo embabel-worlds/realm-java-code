@@ -12,10 +12,11 @@
 
 - name: JarSummary
   description: >-
-    What a jar is: coordinate, file, SHA-256 and how many types and packages it holds. The first
-    call for any jar, and proof the path resolves.
+    What a jar is: coordinate, file, SHA-256, type and package counts. The first call for any jar,
+    and proof the path resolves. One row; not its contents — JarPackages and the type views list
+    those.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:IS_ARTIFACT]->(a:JavaArtifact)
     OPTIONAL MATCH (j)-[:HAS_PACKAGE]->(p:JavaPackage)
@@ -26,7 +27,7 @@
   description: >-
     The packages of a jar with how many types each holds, largest first.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_PACKAGE]->(p:JavaPackage)
     RETURN p.name AS package, p.types AS types
@@ -35,13 +36,15 @@
 
 - name: JavaTypeProfile
   description: >-
-    One type by binary name (`pkg.Outer$Inner`, as a heap dump or stack trace prints it): kind,
-    visibility, source file, superclass and interfaces (inside or outside the jar), enclosing type,
-    how many fields, static fields and methods it declares, and how many types in the jar directly
-    extend or implement it.
+    One type's shape, by binary name: kind, supertypes, member counts, subtypes. The name is
+    `pkg.Outer$Inner`, as a heap dump or stack trace prints it. Returns kind, visibility, source
+    file, superclass and interfaces (inside or outside the jar), enclosing type, how many fields,
+    static fields and methods it declares itself, and how many types in the jar directly extend or
+    implement it. Direct subtypes only, and only those in the same jar; inherited members are not
+    counted.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
-    type: { type: string, description: "Binary class name, e.g. com.example.Cache$Entry." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
+    type: { required: true, type: string, description: "Binary class name, e.g. com.example.Cache$Entry." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_TYPE]->(t:JavaType {name: $type})
     OPTIONAL MATCH (t)-[:HAS_SUBCLASS]->(s:JavaType)
@@ -57,10 +60,11 @@
   description: >-
     Types in a jar that directly extend or implement a type, by binary name. The supertype may be
     outside the jar (`java.lang.Runnable`, `java.util.AbstractMap`): it is matched by name, so this
-    answers "what in this jar implements X" for any X.
+    answers "what in this jar implements X" for any X. Direct subtypes only, not their descendants,
+    and only types inside the jar; at most `limit` rows.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
-    type: { type: string, description: "Binary name of the supertype or interface." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
+    type: { required: true, type: string, description: "Binary name of the supertype or interface." }
     limit: { type: int, default: 200, description: "Maximum rows." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_TYPE]->(t:JavaType)
@@ -72,11 +76,13 @@
 
 - name: JavaTypeFields
   description: >-
-    The fields one type declares: declared type, container kind, static, final, and how many
-    methods read and write each. The step from a type to the field that holds memory.
+    The fields one type declares, with how many methods read and write each. Declared type,
+    container kind, static, final and visibility per field: the step from a type to the field that
+    holds memory. Inherited fields are not included; reader and writer counts are within the jar
+    only.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
-    type: { type: string, description: "Binary class name of the declaring type." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
+    type: { required: true, type: string, description: "Binary class name of the declaring type." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_TYPE]->(t:JavaType {name: $type})-[:DECLARES_FIELD]->(f:JavaField)
     OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:JavaFieldAccess)
@@ -88,12 +94,14 @@
 
 - name: JavaStaticContainers
   description: >-
-    Static fields of a jar whose declared type is a map, collection, array, ThreadLocal or
-    Reference - memory that lives as long as its class loader - ranked by how many methods that
-    touch the field also add to a JDK container, against how many also remove. A static map with
-    adders and no removers is the classic unbounded cache. Approximate: see the note at the top.
+    Static map, collection, array, ThreadLocal, Reference fields, by add vs remove. Memory that
+    lives as long as its class loader, ranked by how many methods that touch the field also add to a
+    JDK container, against how many also remove. A static map with adders and no removers is the
+    classic unbounded cache. Approximate: a method that touches the field and calls a JDK
+    container's put or remove is counted, whether or not the receiver is that field. Instance fields
+    are not included; at most `limit` rows.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
     container: { type: string, default: "", description: "map, collection, array, threadlocal or reference; empty = all." }
     limit: { type: int, default: 50, description: "Maximum rows." }
   cypher: |
@@ -117,11 +125,12 @@
 
 - name: JavaFieldAccesses
   description: >-
-    Every method that reads or writes one field, with source lines - "who assigns this field, and
-    where". A field outside the jar (e.g. `java.lang.System.out`) works too: it is matched by name.
+    Every method that reads or writes one field, with source lines. "Who assigns this field, and
+    where." A field outside the jar (e.g. `java.lang.System.out`) works too: it is matched by its
+    exact key. Only accesses made by code in the jar; at most `limit` rows.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
-    field: { type: string, description: "Field key `<binary owner>.<name>`, e.g. org.example.Util.CACHE (not the bare name), from JavaTypeFields or JavaStaticContainers." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
+    field: { required: true, type: string, description: "Field key `<binary owner>.<name>`, e.g. org.example.Util.CACHE (not the bare name), from JavaTypeFields or JavaStaticContainers." }
     access: { type: string, default: "", description: "READ or WRITE; empty = both." }
     limit: { type: int, default: 200, description: "Maximum rows." }
   cypher: |
@@ -133,12 +142,13 @@
 
 - name: JavaFieldMutationSites
   description: >-
-    For one field: each method that touches it, and the JDK container adds and removes that method
-    makes, with their lines - the evidence behind JavaStaticContainers, method by method. Shows
-    WHERE a cache grows and whether anything ever shrinks it.
+    For one field, each touching method's JDK container adds and removes, by line. The evidence
+    behind JavaStaticContainers, method by method: WHERE a cache grows and whether anything ever
+    shrinks it. Approximate in the same way: the container calls are made in the same method, not
+    proven to be on that field. At most 200 methods.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
-    field: { type: string, description: "Field key `<binary owner>.<name>`, e.g. org.example.Util.CACHE (not the bare name)." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
+    field: { required: true, type: string, description: "Field key `<binary owner>.<name>`, e.g. org.example.Util.CACHE (not the bare name)." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_ACCESS]->(a:JavaFieldAccess {field: $field})
     OPTIONAL MATCH (a)-[:SAME_METHOD_CALL]->(c:JavaMethodCall)
@@ -154,12 +164,14 @@
 
 - name: JavaCallers
   description: >-
-    Who in a jar calls a type's methods, by the target's binary owner name and optionally the method
-    name, with lines. The target may be anywhere: `java.lang.System` + `exit`, `java.lang.Thread` +
-    `<init>`, or a type in the jar. Constructors are `<init>`.
+    Who in a jar calls a type's methods, with lines. By the target's exact binary owner name and
+    optionally the method name. The target may be anywhere: `java.lang.System` + `exit`,
+    `java.lang.Thread` + `<init>`, or a type in the jar. Constructors are `<init>`. Matched on the
+    static receiver type the bytecode names, so a call through a supertype or interface is not
+    counted against the subtype; at most `limit` rows.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
-    type: { type: string, description: "Binary name of the called type." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
+    type: { required: true, type: string, description: "Binary name of the called type." }
     method: { type: string, default: "", description: "Method name; empty = any method of the type." }
     limit: { type: int, default: 200, description: "Maximum rows." }
   cypher: |
@@ -171,12 +183,13 @@
 
 - name: JavaMethodsNamed
   description: >-
-    Methods of a type with a given name and their first source line - resolves a stack-trace frame
-    (`Type.method(File.java:123)`) to method keys. Overloads are all returned; the one whose first
-    line is the highest not above the frame's line holds it.
+    Methods of a type with a given name, and each one's first source line. Resolves a stack-trace
+    frame (`Type.method(File.java:123)`) to method keys. Overloads are all returned; the one whose
+    first line is the highest not above the frame's line holds it. Methods declared by the type
+    itself only, not inherited ones; at most 500 rows.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
-    type: { type: string, description: "Binary class name from the frame." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
+    type: { required: true, type: string, description: "Binary class name from the frame." }
     method: { type: string, default: "", description: "Method name from the frame; empty = every method." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_METHOD]->(m:JavaMethod {owner: $type})
@@ -188,10 +201,11 @@
 
 - name: JavaOutsideDependencies
   description: >-
-    The code outside a jar that it calls most - JDK and third-party types - by call sites and
-    calling methods. What a jar leans on, and what upgrading a dependency touches.
+    The types outside a jar that it calls most, by call sites and calling methods. JDK and
+    third-party types alike: what a jar leans on, and what upgrading a dependency touches. Calls
+    only, not field reads, casts or supertypes; at most `limit` rows.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
     limit: { type: int, default: 50, description: "Maximum rows." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_CALL]->(c:JavaMethodCall {internal: false})
@@ -201,13 +215,13 @@
 
 - name: JavaHashedKeysWithoutHashCode
   description: >-
-    Map and set fields whose declared key (a map's key, a set's element) is a class in the jar that
-    never overrides `hashCode` - it hashes by identity, so two equal-looking keys are two entries,
-    and a key the caller does not keep can never be found again. Read from the fields' generic
-    signatures, so it sees the key type a field declares, not keys of an undeclared type passed at
-    run time; a key type outside the jar is not judged here.
+    Map keys and set elements of a class that never overrides `hashCode`. Such a key hashes by
+    identity, so two equal-looking keys are two entries, and a key the caller does not keep can
+    never be found again. Read from the fields' generic signatures, so it sees the key type a field
+    declares, not keys of an undeclared type passed at run time; a key type outside the jar is not
+    judged here. At most `limit` rows.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
     limit: { type: int, default: 100, description: "Maximum rows." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_FIELD]->(f:JavaField)-[:KEYED_BY]->(k:JavaType)
@@ -219,12 +233,13 @@
 
 - name: JavaFieldsHolding
   description: >-
-    Fields that hold a given type - declared as it, or as a container of it (`List<T>`,
-    `Map<K, T>`, `T[]`) - by the fields' generic signatures. Works for any type, inside the jar or
-    not: `java.lang.Thread`, `java.lang.ClassLoader`, or a type of the jar's own.
+    Fields that hold a given type, directly or in a container. Declared as it, or as a container of
+    it (`List<T>`, `Map<K, T>`, `T[]`), by the fields' generic signatures. Works for any type,
+    inside the jar or not: `java.lang.Thread`, `java.lang.ClassLoader`, or a type of the jar's own.
+    Exact binary name only, not its subtypes; at most `limit` rows.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
-    type: { type: string, description: "Binary name of the held type." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
+    type: { required: true, type: string, description: "Binary name of the held type." }
     limit: { type: int, default: 200, description: "Maximum rows." }
   cypher: |
     MATCH (j:Jar {path: $jar})-[:HAS_FIELD]->(f:JavaField)
@@ -238,12 +253,13 @@
 
 - name: JavaCastTargets
   description: >-
-    What a jar casts to and tests with instanceof at run time, per target type: how many casts, how
+    What a jar casts to and tests with instanceof at run time, per target type. How many casts, how
     many instanceof tests and in how many methods, most first. Read from the instructions, so it
-    includes the casts the compiler adds for erased generics (`String s = list.get(0)`); narrow to
-    `kind` cast or instanceof, or to types in the jar with `internalOnly`.
+    includes the casts the compiler adds for erased generics (`String s = list.get(0)`), and not
+    primitive conversions; narrow to `kind` cast or instanceof, or to types in the jar with
+    `internalOnly`. At most `limit` rows.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
     kind: { type: string, default: "", description: "cast or instanceof; empty = both." }
     internalOnly: { type: boolean, default: false, description: "Only target types the jar declares." }
     limit: { type: int, default: 100, description: "Maximum rows." }
@@ -259,12 +275,13 @@
 
 - name: JavaCastSites
   description: >-
-    Every cast and instanceof of one type in a jar, by binary name (`java.util.Map$Entry`, an array
-    as `java.lang.String[]`): the method, line and whether it is in a lambda or a compiler-made
-    method. "Where does this program downcast to X?"
+    Every cast and instanceof of one type in a jar, with method and line. By exact binary name
+    (`java.util.Map$Entry`, an array as `java.lang.String[]`), with whether it is in a lambda or a
+    compiler-made method: "where does this program downcast to X?" Not casts to its subtypes; at
+    most `limit` rows.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
-    type: { type: string, description: "Binary name of the target type, e.g. java.util.Map$Entry." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
+    type: { required: true, type: string, description: "Binary name of the target type, e.g. java.util.Map$Entry." }
     kind: { type: string, default: "", description: "cast or instanceof; empty = both." }
     limit: { type: int, default: 200, description: "Maximum rows." }
   cypher: |
@@ -277,12 +294,12 @@
 
 - name: JavaMethodComplexity
   description: >-
-    The jar's methods ranked by conditional branches, with loops (back edges), switches, exception
-    handlers, casts, instanceof tests, instruction count and line span, each method's lambdas
-    included. Counted from the bytecode: `&&`, `||` and `?:` are branches, and a string switch is
-    two switches. Narrow to one type with `type`.
+    The jar's methods ranked by conditional branches, lambdas included. With loops (back edges),
+    switches, exception handlers, casts, instanceof tests, instruction count and line span. Counted
+    from the bytecode: `&&`, `||` and `?:` are branches, and a string switch is two switches. Narrow
+    to one type with `type`. Bridge methods are left out; at most `limit` rows.
   params:
-    jar: { type: string, description: "Path of the jar to read." }
+    jar: { required: true, type: string, description: "Path of the jar to read." }
     type: { type: string, default: "", description: "Binary class name; empty = every type." }
     limit: { type: int, default: 50, description: "Maximum rows." }
   cypher: |

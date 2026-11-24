@@ -39,7 +39,7 @@
 # MATCH (`{calleeOwner: 'java.util.Map'}`), which the producer applies before rows reach the graph.
 
 - name: JavaArtifact
-  description: "The jar itself: coordinate, file, SHA-256, type count. Reached from a pinned jar: `MATCH (j:Jar {path:$jar})-[:IS_ARTIFACT]->(a:JavaArtifact)`. The coordinate is read from the jar: `groupId:artifactId:version` from Maven metadata, `title:version` from the manifest, else the file name."
+  description: "The jar itself, one node per pinned jar, identified by `id`, the jar path: coordinate, file, SHA-256, type count. Reached from a pinned jar: `MATCH (j:Jar {path:$jar})-[:IS_ARTIFACT]->(a:JavaArtifact)`. The coordinate is read from the jar: `groupId:artifactId:version` from Maven metadata, `title:version` from the manifest, else the file name."
   properties:
     id: { identity: true, description: "The jar path as the query gave it. Identity." }
     jarPath: "The jar path as the query gave it."
@@ -56,22 +56,32 @@
 
 - name: JavaPackage
   parents: [Package]
-  description: "A Java package in a jar, with how many types it holds. Its types: CONTAINS_TYPE."
+  description: "One Java package in a jar, identified by `id` = `<jar path>!<dotted package name>`, with how many types it holds. Read from the class files when a query reaches the jar; nothing is stored. Its types: CONTAINS_TYPE."
   properties:
     id: { identity: true, description: "`<jar path>!<package>`. Identity." }
-    jarPath: "The jar path."
+    jarPath: "The jar path exactly as the query pinned it (`Jar.path`), the first part of every id here; the same jar pinned by two spellings reads as two jars."
     name: "Dotted package name."
     types: { type: int, description: "Types in this package." }
   virtualJoins:
     - { anchorLabel: Jar, relationship: HAS_PACKAGE, keyField: path, recordKeyField: anchorKey, producer: javaJarPackages,
-        description: "Every package in a jar." }
+        description: "Every package in the pinned jar, one row each, from one read of the jar. Start here for a package-level map, then CONTAINS_TYPE." }
 
 - name: JavaType
   parents: [CodeType]
-  description: "A class, interface, enum, record or annotation compiled into a jar, including nested, anonymous and local classes. `name` is the binary name (`a.b.Outer$Inner`), the form heap dumps and stack traces use. `superclass` and `interfaces` name supertypes wherever they live; HAS_SUBCLASS / HAS_IMPLEMENTOR walk down to subtypes in the same jar. Fields: DECLARES_FIELD. Methods: DECLARES_METHOD."
+  examples:
+    - q: "what in spring-core implements java.lang.Runnable"
+      cypher: |
+        MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_TYPE]->(t:JavaType)
+        WHERE 'java.lang.Runnable' IN t.interfaces
+        RETURN t.name, t.kind
+    - q: "which methods does org.springframework.util.StringUtils declare"
+      cypher: |
+        MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_TYPE]->(t:JavaType {name: 'org.springframework.util.StringUtils'})-[:DECLARES_METHOD]->(m:JavaMethod)
+        RETURN m.key, m.line ORDER BY m.line
+  description: "One class, interface, enum, record or annotation compiled into a jar, identified by `id` = `<jar path>!<binary name>`; nested, anonymous and local classes included. `name` is the binary name (`a.b.Outer$Inner`), the form heap dumps and stack traces use. `superclass` and `interfaces` name supertypes wherever they live; HAS_SUBCLASS / HAS_IMPLEMENTOR walk down to subtypes in the same jar. Fields: DECLARES_FIELD. Methods: DECLARES_METHOD."
   properties:
     id: { identity: true, description: "`<jar path>!<binary class name>`. Identity; the key every hop from a type takes." }
-    jarPath: "The jar path."
+    jarPath: "The jar path exactly as the query pinned it (`Jar.path`), the first part of every id here; the same jar pinned by two spellings reads as two jars."
     name: "Binary class name, e.g. `com.example.Cache$Entry`."
     simpleName: "Name without package or enclosing class; empty for anonymous classes."
     packageName: "Dotted package name."
@@ -96,7 +106,7 @@
     - { anchorLabel: Jar, relationship: HAS_TYPE, keyField: path, recordKeyField: anchorKey, producer: javaJarTypes,
         description: "Every type in a jar; narrow with `{name: '…'}` or `{packageName: '…'}` in the same MATCH." }
     - { anchorLabel: JavaPackage, relationship: CONTAINS_TYPE, keyField: id, recordKeyField: anchorKey, producer: javaTypesInPackage,
-        description: "The types of one package." }
+        description: "The types one package holds, read from the same jar; narrow with `{name: '…'}` or `{kind: 'interface'}` in the same MATCH." }
     - { anchorLabel: JavaType, relationship: HAS_SUBCLASS, keyField: id, recordKeyField: anchorKey, producer: javaSubclassesOf,
         description: "Types in the same jar that directly extend this one." }
     - { anchorLabel: JavaType, relationship: HAS_IMPLEMENTOR, keyField: id, recordKeyField: anchorKey, producer: javaImplementorsOf,
@@ -112,15 +122,21 @@
 
 - name: JavaField
   parents: [Field]
+  examples:
+    - q: "static maps in spring-core and the methods that write them"
+      cypher: |
+        MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_FIELD]->(f:JavaField {isStatic: true, container: 'map'})
+        OPTIONAL MATCH (f)-[:ACCESSED_BY]->(a:JavaFieldAccess {access: 'WRITE'})
+        RETURN f.key, f.genericType, collect(a.method) AS writers
   description: "A field declared by a type in a jar. `key` is `Owner.name` with the binary owner name, the same `Owner.field` a heap dump's path to a GC root names. `container` says whether the declared type is a map, collection, array, ThreadLocal or Reference. Who reads or writes it: ACCESSED_BY."
   properties:
     id: { identity: true, description: "`<jar path>!<owner>.<field>`. Identity." }
-    jarPath: "The jar path."
+    jarPath: "The jar path exactly as the query pinned it (`Jar.path`), the first part of every id here; the same jar pinned by two spellings reads as two jars."
     key: "`<binary owner name>.<field name>`, e.g. `com.example.Registry.listeners`."
     owner: "Binary name of the declaring type."
     ownerId: "The declaring JavaType's id."
     name: "Field name."
-    type: "Declared type, erased; arrays as `T[]`."
+    type: "The field's declared Java type, erased to a binary name (`java.util.Map`, `int`); arrays as `T[]`. Open-ended, not an enumeration; `container` says its shape."
     genericType: "Declared type with its type arguments, as source writes it: `java.util.Map<com.x.Key, java.lang.String>`."
     typeArguments: { cardinality: LIST, description: "The declared type's type arguments, erased to binary names." }
     keyType: "For a map, its key type; for a set, its element type — what the container hashes. Empty otherwise."
@@ -139,14 +155,14 @@
     - { anchorLabel: Jar, relationship: HAS_FIELD, keyField: path, recordKeyField: anchorKey, producer: javaJarFields,
         description: "Every field in a jar; narrow with `{isStatic: true}`, `{container: 'map'}` or `{key: '…'}` in the same MATCH." }
     - { anchorLabel: JavaType, relationship: DECLARES_FIELD, keyField: id, recordKeyField: anchorKey, producer: javaFieldsOfType,
-        description: "The fields one type declares." }
+        description: "The fields one type declares itself, static and instance; inherited fields are not included, walk `superclass` for those." }
 
 - name: JavaMethod
   parents: [Method]
   description: "A method, constructor or static initializer declared by a type in a jar. `key` is `Owner.name(param types)`; constructors are `<init>`, static initializers `<clinit>`. A lambda has no row of its own: its calls, accesses and casts belong to the method it is written in. Its calls: MAKES_CALL. Who calls it: CALLED_BY. Its field accesses: MAKES_ACCESS. Its casts: MAKES_CAST. Its branch, loop and handler counts: HAS_BODY."
   properties:
     id: { identity: true, description: "`<jar path>!<method key>`. Identity." }
-    jarPath: "The jar path."
+    jarPath: "The jar path exactly as the query pinned it (`Jar.path`), the first part of every id here; the same jar pinned by two spellings reads as two jars."
     key: "`<binary owner>.<name>(<parameter types>)`."
     owner: "Binary name of the declaring type."
     ownerId: "The declaring JavaType's id."
@@ -181,10 +197,10 @@
 
 - name: JavaFieldAccess
   parents: [FieldAccess]
-  description: "Every place one method touches one field, one way: READ (getfield/getstatic) or WRITE (putfield/putstatic, i.e. assignment), with source lines. Adding to a collection held in a field is a READ of the field plus a JavaMethodCall (`put`, `add`) in the same method, not a WRITE. The method: IN_METHOD."
+  description: "One method's accesses to one field, one way, identified by `id` = `<jar path>!<method> READ|WRITE <field>`: READ (getfield/getstatic) or WRITE (putfield/putstatic, i.e. assignment), with source lines. Adding to a collection held in a field is a READ of the field plus a JavaMethodCall (`put`, `add`) in the same method, not a WRITE. The method: IN_METHOD."
   properties:
     id: { identity: true, description: "`<jar path>!<method> READ|WRITE <field>`. Identity." }
-    jarPath: "The jar path."
+    jarPath: "The jar path exactly as the query pinned it (`Jar.path`), the first part of every id here; the same jar pinned by two spellings reads as two jars."
     key: "`<method key> READ|WRITE <field key>`."
     method: "Key of the accessing method."
     methodId: "The accessing JavaMethod's id."
@@ -192,7 +208,7 @@
     field: "`<owner>.<name>` of the field accessed, as the bytecode names it; may be outside the jar."
     fieldId: "The field's id, `<jar path>!<field>`; a JavaField exists for it only when `internal`."
     fieldOwner: "Binary name of the field's owner."
-    fieldName: "Field name."
+    fieldName: "Simple name of the field accessed, without its owner; `field` has `<owner>.<name>`."
     access: "`READ` or `WRITE`."
     lines: { cardinality: LIST, type: int, description: "Every source line with this access, ascending." }
     firstLine: { type: int, description: "The first of `lines`." }
@@ -211,10 +227,15 @@
 
 - name: JavaMethodCall
   parents: [Call]
-  description: "Every call from one method to one target method or constructor, with source lines. The target is named as the bytecode names it (the static receiver type): `callee`, `calleeOwner`, `calleeName` are always set, so calls into the JDK or other libraries are matched by property (`calleeOwner = 'java.util.Map' AND calleeName = 'put'`). The target method, when the jar declares it: TARGETS."
+  examples:
+    - q: "who in spring-core calls System.exit"
+      cypher: |
+        MATCH (j:Jar {path: 'data/jars/spring-core-6.2.18.jar'})-[:HAS_CALL]->(c:JavaMethodCall {calleeOwner: 'java.lang.System', calleeName: 'exit'})
+        RETURN c.caller, c.lines
+  description: "One method's calls to one target method or constructor, identified by `id` = `<jar path>!<caller> CALLS <callee>`, with source lines. The target is named as the bytecode names it (the static receiver type): `callee`, `calleeOwner`, `calleeName` are always set, so calls into the JDK or other libraries are matched by property (`calleeOwner = 'java.util.Map' AND calleeName = 'put'`). The target method, when the jar declares it: TARGETS."
   properties:
     id: { identity: true, description: "`<jar path>!<caller> CALLS <callee>`. Identity." }
-    jarPath: "The jar path."
+    jarPath: "The jar path exactly as the query pinned it (`Jar.path`), the first part of every id here; the same jar pinned by two spellings reads as two jars."
     key: "`<caller key> CALLS <callee full name>`."
     caller: "Key of the calling method."
     callerId: "The calling JavaMethod's id."
@@ -234,17 +255,17 @@
     - { anchorLabel: Jar, relationship: HAS_CALL, keyField: path, recordKeyField: anchorKey, maxFanoutTotal: 30000, producer: javaJarCalls,
         description: "Every call in a jar; narrow with `{calleeOwner: '…'}` and `{calleeName: '…'}` in the same MATCH — e.g. who calls `java.lang.System.exit`." }
     - { anchorLabel: JavaMethod, relationship: MAKES_CALL, keyField: id, recordKeyField: anchorKey, producer: javaCallsFromMethod,
-        description: "Every call one method makes." }
+        description: "Every call one method makes, one row per distinct target, into the jar or out to the JDK and other libraries; TARGETS then reaches the targets the jar declares." }
     - { anchorLabel: JavaMethod, relationship: CALLED_BY, keyField: id, recordKeyField: anchorKey, producer: javaCallsToMethod,
         description: "Every call to one method from elsewhere in the jar." }
     - { anchorLabel: JavaFieldAccess, relationship: SAME_METHOD_CALL, keyField: methodId, recordKeyField: anchorKey, producer: javaCallsFromMethod,
         description: "The calls made by the method that made this field access — e.g. whether the method that reads a map field also calls `put` or `remove`." }
 
 - name: JavaCast
-  description: "One `checkcast` or `instanceof` instruction in a method body: what the program casts, or tests, at run time. `kind` is `cast` or `instanceof`; `targetType` the type named (an array as `T[]`). Bytecode, not source: a generic call's erased result (`String s = list.get(0)`) is a cast the source never wrote, a pattern match (`o instanceof Foo f`) is an instanceof AND a cast, a bridge method casts its argument, and a primitive conversion (`(int) x`) or boxing is not a cast at all. `inSyntheticMethod` marks casts in compiler-made methods. A cast in a lambda belongs to the method the lambda is written in; `lambda` names the compiled lambda. Its method: CAST_IN. The type, when the jar declares it: CASTS_TO."
+  description: "One `checkcast` or `instanceof` instruction in a method body, identified by `id` = `<jar path>!<method key> <kind> <targetType> #<ordinal>`: what the program casts, or tests, at run time. `kind` is `cast` or `instanceof`; `targetType` the type named (an array as `T[]`). Bytecode, not source: a generic call's erased result (`String s = list.get(0)`) is a cast the source never wrote, a pattern match (`o instanceof Foo f`) is an instanceof AND a cast, a bridge method casts its argument, and a primitive conversion (`(int) x`) or boxing is not a cast at all. `inSyntheticMethod` marks casts in compiler-made methods. A cast in a lambda belongs to the method the lambda is written in; `lambda` names the compiled lambda. Its method: CAST_IN. The type, when the jar declares it: CASTS_TO."
   properties:
     id: { identity: true, description: "`<jar path>!<key>`. Identity." }
-    jarPath: "The jar path."
+    jarPath: "The jar path exactly as the query pinned it (`Jar.path`), the first part of every id here; the same jar pinned by two spellings reads as two jars."
     key: "`<method key> <kind> <targetType> #<ordinal>`, with the compiled body's key (a lambda's own name, a bridge's `… returns <type>`)."
     kind: "`cast` (checkcast) or `instanceof`."
     targetType: "Type named, binary, arrays as `T[]`, e.g. `java.util.Map$Entry`, `java.lang.String[]`."
@@ -255,7 +276,7 @@
     method: "Key of the method the instruction was written in, as JavaMethod's `key`. Absent only inside a synthetic accessor."
     methodId: "That JavaMethod's id."
     methodOwner: "Binary name of the method's type."
-    methodName: "The method's name."
+    methodName: "Simple name of the method the instruction is in (`<init>` for a constructor), without owner or parameters; `method` has the full key."
     lambda: "The compiled lambda body the instruction is in (`lambda$parse$0`), when it is in one."
     ordinal: { type: int, description: "Position among the compiled body's casts and instanceofs, from 1, in bytecode order." }
     line: { type: int, description: "Source line from debug info; absent without it." }
@@ -272,10 +293,10 @@
         description: "Every cast to, or instanceof test of, one type in the jar. For a type outside the jar, match `targetType` on HAS_CAST instead." }
 
 - name: JavaMethodBody
-  description: "What one compiled method body holds, counted from its instructions: conditional branches, loop back-edges, switches, exception handlers, casts, instanceofs, instruction count and line span. Abstract and native methods have none. A lambda body is its own row, belonging (`method`) to the method it is written in: HAS_BODY from a JavaMethod returns its body and one per lambda in it (`isLambda`), so sum them for the method as written. Bytecode, not source: `&&`, `||` and `?:` are branches; a string switch is two switches plus an equals branch per case; `finally` code is copied into each exit path and counted per copy; Kotlin inline functions report lines past the file's end, stretching `lastLine` and `lineSpan`."
+  description: "One compiled method body, identified by `id` = `<jar path>!<body key>`, and what it holds, counted from its instructions: conditional branches, loop back-edges, switches, exception handlers, casts, instanceofs, instruction count and line span. Abstract and native methods have none. A lambda body is its own row, belonging (`method`) to the method it is written in: HAS_BODY from a JavaMethod returns its body and one per lambda in it (`isLambda`), so sum them for the method as written. Bytecode, not source: `&&`, `||` and `?:` are branches; a string switch is two switches plus an equals branch per case; `finally` code is copied into each exit path and counted per copy; Kotlin inline functions report lines past the file's end, stretching `lastLine` and `lineSpan`."
   properties:
     id: { identity: true, description: "`<jar path>!<key>`. Identity." }
-    jarPath: "The jar path."
+    jarPath: "The jar path exactly as the query pinned it (`Jar.path`), the first part of every id here; the same jar pinned by two spellings reads as two jars."
     key: "The compiled body's key: the method's own key, a lambda's (`Owner.lambda$parse$0(…)`), or for a bridge, which shares its method's key, `<method key> returns <type>`."
     method: "Key of the JavaMethod the body belongs to; absent for a synthetic accessor."
     methodId: "That JavaMethod's id."
