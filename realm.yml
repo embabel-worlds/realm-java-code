@@ -17,7 +17,7 @@ description: |
   Bytecode only: no source is needed, and none is read. Ships spring-core 6.2.18 as an example
   jar, with three demo views over it; every other view takes any jar.
   Requires the appliance's `jar` producer kind.
-version: 0.1.2
+version: 0.1.3
 maturity: experimental
 requires:
   # Declares the parents its types extend (Package, CodeType, Field, Method, Call, FieldAccess).
